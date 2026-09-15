@@ -1,0 +1,19 @@
+<div id="caca-hybrid-loader" class="caca-hybrid-card {{ done_class }}">
+<div class="caca-hybrid-header">
+<div id="hybrid-status-text" class="caca-hybrid-status">{{ status_text }}</div>
+<div id="hybrid-close-btn" class="caca-hybrid-close" onclick="var c=document.getElementById('caca-hybrid-loader');if(c){c.style.opacity='0';c.style.transform='scale(0.92)';c.style.transition='all 0.2s ease';setTimeout(function(){c.style.display='none';},200);}" title="Tutup status">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+</div>
+</div>
+<div class="caca-hybrid-gauge">
+<svg width="88" height="88" viewBox="0 0 88 88" style="display: block; width: 88px; height: 88px; overflow: visible;">
+<circle class="caca-hybrid-circle-track" cx="44" cy="44" r="36" stroke="{{ track_color }}" stroke-width="6" fill="none" />
+<circle id="hybrid-circle-progress" class="caca-hybrid-circle-arc" cx="44" cy="44" r="36" stroke="{{ stroke_color }}" stroke-width="6" stroke-linecap="round" fill="none" stroke-dasharray="226.19" stroke-dashoffset="{{ stroke_dashoffset }}" transform="rotate(-90 44 44)" />
+</svg>
+<div id="hybrid-pct-text" class="caca-hybrid-pct">{{ pct }}%</div>
+</div>
+<div class="caca-hybrid-info">
+<div class="caca-hybrid-fname" title="{{ filename }}">{{ filename }}</div>
+<div class="caca-hybrid-detail" title="{{ detail_text }}">{{ detail_text }}</div>
+</div>
+</div>
