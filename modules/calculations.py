@@ -5,11 +5,13 @@ Terminal Teluk Lamong - Pelindo
 Berisi algoritma komputasi multi-layer:
 1. Rekonstruksi & Normalisasi Data (VBA Val(), datetime fallback, vessel cleaner)
 2. Layer 1: Deteksi Combo 20ft (Sliding Window Greedy Matching)
-3. Layer 1b: Deteksi Twin Lift (Sama Kapal & Delta Waktu DISC_LOAD_TS)
+3. Layer 1b: Deteksi Twin Lift (Sama Kapal, Sama Truk, Sama Crane/QC & Delta
+   Waktu DISC_LOAD_TS)
 4. Pembentukan Event Ritase Truk
 5. Layer 2: Deteksi Dual Cycle (Lintas Aktivitas LOAD vs DISC)
 6. Penomoran Urut Event ID Global
-7. Perhitungan Ringkasan Metrik & Evaluasi KPI Bulanan
+7. Perhitungan Ringkasan Metrik, KPI Bulanan, Breakdown Harian/Shift,
+   & Performa Crane dalam Twinlift
 """
 
 import re
@@ -78,6 +80,16 @@ def siapkan_data(raw: pd.DataFrame, col_map: dict, size_eligible: int) -> pd.Dat
         df["CTR_SIZE"] = pd.to_numeric(extracted, errors="coerce").fillna(0.0).astype(float)
 
     df["CAR_CHE_ID"] = raw[col_map["truck"]].astype(str).str.strip()
+
+    # Kolom Crane (QC) bersifat opsional — dipakai untuk syarat 'sama crane' pada
+    # deteksi Twinlift & laporan performa Twinlift per Crane. Jika tidak dipetakan,
+    # semua baris dianggap satu crane yang sama (tidak mengubah hasil deteksi lama).
+    crane_col = col_map.get("crane")
+    if crane_col and crane_col in raw.columns:
+        df["CRANE_ID"] = raw[crane_col].astype(str).str.strip()
+        df.loc[df["CRANE_ID"].isin(["", "nan", "None", "NaT"]), "CRANE_ID"] = "(Crane Kosong)"
+    else:
+        df["CRANE_ID"] = "(Tidak Diketahui)"
 
     # Vektorisasi klasifikasi aktivitas LOAD / DISC
     act_str = raw[col_map["activity"]].astype(str).str.upper()
@@ -181,10 +193,13 @@ def layer1_combo(df: pd.DataFrame, ambang_combo: float, size_eligible: int) -> p
 
 def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligible: int):
     """
-    Layer 1b: Deteksi kondisi Twin Lift di dalam grup Combo:
+    Layer 1b: Deteksi kondisi Twin Lift di dalam grup Combo. Syarat lengkap:
     1. Ukuran 20ft
-    2. VES_ID sama
-    3. Selisih DISC_LOAD_TS <= ambang_twinlift
+    2. VES_ID (kapal) sama
+    3. CAR_CHE_ID (truk) sama — sudah otomatis terjamin karena Combo hanya
+       dibentuk dari pasangan dalam truk yang sama (Layer 1)
+    4. CRANE_ID (Crane/QC) sama
+    5. Selisih DISC_LOAD_TS <= ambang_twinlift
     Dioptimalkan secara vektorisasi NumPy (~400x lebih cepat daripada groupby loop).
     """
     grp_sizes = df_combo["GROUP_ID"].value_counts()
@@ -201,10 +216,15 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
         gids = r1["GROUP_ID"].to_numpy()
         syarat_size = (r1["CTR_SIZE"].to_numpy() == size_eligible) & (r2["CTR_SIZE"].to_numpy() == size_eligible)
         syarat_kapal = r1["VES_ID"].to_numpy() == r2["VES_ID"].to_numpy()
+        # Syarat truk sama sesungguhnya sudah terjamin dari Layer 1 (Combo hanya
+        # dibentuk dari pasangan dalam CAR_CHE_ID yang sama), sehingga tidak perlu
+        # dicek ulang di sini. Tambahan syarat: kedua kontainer harus diangkat oleh
+        # Crane (QC) yang sama.
+        syarat_crane = r1["CRANE_ID"].to_numpy() == r2["CRANE_ID"].to_numpy()
         gap_mins = np.abs((r2["TS_G"].to_numpy() - r1["TS_G"].to_numpy()) / np.timedelta64(1, "m"))
         syarat_waktu = gap_mins <= ambang_twinlift
 
-        is_twin = syarat_size & syarat_kapal & syarat_waktu
+        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu
         statuses = np.where(is_twin, "Twinlift", "Bukan Twinlift")
         rounded_gaps = np.round(gap_mins, 2)
 
@@ -231,9 +251,12 @@ def bentuk_event(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
+    tmp["CRANE_ID"] = df["CRANE_ID"].to_numpy()
+
     events = tmp.groupby("GROUP_ID", sort=True).agg(
         ACTIVITY=("ACTIVITY", "first"),
         CAR_CHE_ID=("CAR_CHE_ID", "first"),
+        CRANE_ID=("CRANE_ID", "first"),
         START_TS=("EVT_START", "min"),
         END_TS=("EVT_END", "max"),
         N_ANGGOTA=("GROUP_ID", "size"),
@@ -318,7 +341,95 @@ def gabungkan_hasil(df: pd.DataFrame, events: pd.DataFrame, event_id_map: dict) 
     return out
 
 
-def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame) -> dict:
+def hitung_performa_crane(out_df: pd.DataFrame, size_eligible: int) -> pd.DataFrame:
+    """
+    Menghitung performa tiap Crane (QC) dalam pembentukan Twinlift.
+    Basis perhitungan per baris kontainer (bukan per event), karena crane
+    bekerja mengangkat kontainer satu per satu.
+
+    Kolom hasil:
+    - total_kontainer         : semua kontainer yang ditangani crane tsb
+    - total_20ft              : kontainer size 20ft yang ditangani crane tsb
+    - total_twinlift          : kontainer yang berstatus Twinlift
+    - pct_twinlift_dari_total : total_twinlift / total_kontainer
+    - pct_twinlift_dari_20ft  : total_twinlift / total_20ft (basis kontainer eligible)
+    """
+    df = out_df.copy()
+    df["_is_twinlift"] = (df["TWINLIFT_STATUS"] == "Twinlift").astype(int)
+    df["_is_20ft"] = (df["CTR_SIZE"] == size_eligible).astype(int)
+
+    crane = df.groupby("CRANE_ID").agg(
+        total_kontainer=("CRANE_ID", "size"),
+        total_20ft=("_is_20ft", "sum"),
+        total_twinlift=("_is_twinlift", "sum"),
+    ).reset_index()
+
+    crane["pct_twinlift_dari_total"] = np.where(
+        crane["total_kontainer"] > 0, crane["total_twinlift"] / crane["total_kontainer"], 0
+    )
+    crane["pct_twinlift_dari_20ft"] = np.where(
+        crane["total_20ft"] > 0, crane["total_twinlift"] / crane["total_20ft"], 0
+    )
+    crane = crane.sort_values(
+        ["pct_twinlift_dari_total", "total_twinlift"], ascending=[False, False]
+    ).reset_index(drop=True)
+    return crane
+
+
+def hitung_breakdown_waktu(events: pd.DataFrame) -> dict:
+    """
+    Breakdown Dual Cycle & Twinlift berdasarkan waktu:
+    - per hari (TANGGAL)
+    - per shift (3 shift kerja: 00.00-08.00, 08.00-16.00, 16.00-00.00)
+    - per hari x shift (gabungan, untuk melihat tren shift dari hari ke hari)
+    """
+    ev = events.copy()
+    ev["TANGGAL"] = ev["START_TS"].dt.date
+    jam = ev["START_TS"].dt.hour
+
+    shift_labels = ["Shift 1 (00.00-08.00)", "Shift 2 (08.00-16.00)", "Shift 3 (16.00-00.00)"]
+    ev["SHIFT"] = pd.cut(jam, bins=[-1, 7, 15, 23], labels=shift_labels, include_lowest=True)
+
+    ev["_is_dual"] = (ev["STATUS"] == "Dual Cycle").astype(int)
+    ev["_is_twinlift"] = (ev["TWINLIFT_STATUS"] == "Twinlift").astype(int)
+
+    daily = ev.groupby("TANGGAL").agg(
+        total_event=("STATUS", "count"),
+        dual=("_is_dual", "sum"),
+        twinlift=("_is_twinlift", "sum"),
+    ).reset_index()
+    daily["non_dual"] = daily["total_event"] - daily["dual"]
+    daily["pct_dual"] = np.where(daily["total_event"] > 0, daily["dual"] / daily["total_event"], 0)
+    daily["pct_twinlift"] = np.where(daily["total_event"] > 0, daily["twinlift"] / daily["total_event"], 0)
+    daily["TANGGAL"] = daily["TANGGAL"].astype(str)
+    daily = daily.sort_values("TANGGAL").reset_index(drop=True)
+
+    shift = ev.groupby("SHIFT", observed=True).agg(
+        total_event=("STATUS", "count"),
+        dual=("_is_dual", "sum"),
+        twinlift=("_is_twinlift", "sum"),
+    ).reset_index()
+    shift["non_dual"] = shift["total_event"] - shift["dual"]
+    shift["pct_dual"] = np.where(shift["total_event"] > 0, shift["dual"] / shift["total_event"], 0)
+    shift["pct_twinlift"] = np.where(shift["total_event"] > 0, shift["twinlift"] / shift["total_event"], 0)
+    shift["SHIFT"] = shift["SHIFT"].astype(str)
+
+    day_shift = ev.groupby(["TANGGAL", "SHIFT"], observed=True).agg(
+        total_event=("STATUS", "count"),
+        dual=("_is_dual", "sum"),
+    ).reset_index()
+    day_shift["non_dual"] = day_shift["total_event"] - day_shift["dual"]
+    day_shift["pct_dual"] = np.where(
+        day_shift["total_event"] > 0, day_shift["dual"] / day_shift["total_event"], 0
+    )
+    day_shift["TANGGAL"] = day_shift["TANGGAL"].astype(str)
+    day_shift["SHIFT"] = day_shift["SHIFT"].astype(str)
+    day_shift = day_shift.sort_values(["TANGGAL", "SHIFT"]).reset_index(drop=True)
+
+    return {"daily": daily, "shift": shift, "day_shift": day_shift}
+
+
+def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: int = SIZE_ELIGIBLE) -> dict:
     """Menghitung ringkasan statistik komprehensif, metrik KPI, dan agregasi bulanan."""
     total_event = len(events)
     total_dual = int((events["STATUS"] == "Dual Cycle").sum())
@@ -345,6 +456,11 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame) -> dict:
     container_load = dual_load + single_load
     container_disc = dual_disc + single_disc
     container_total = len(out_df)
+
+    # Info jumlah kontainer 20ft (basis eligible Combo/Twinlift)
+    total_20ft = int((out_df["CTR_SIZE"] == size_eligible).sum())
+    total_bukan_20ft = container_total - total_20ft
+    pct_20ft_of_total = (total_20ft / container_total) if container_total else 0
 
     ev = events.copy()
     ev["BULAN"] = ev["START_TS"].dt.to_period("M")
@@ -381,6 +497,12 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame) -> dict:
     monthly = monthly.sort_index()
     monthly.index = monthly.index.astype(str)
 
+    # Performa Crane (QC) dalam pembentukan Twinlift
+    crane_performa = hitung_performa_crane(out_df, size_eligible)
+
+    # Breakdown Dual Cycle & Twinlift per hari dan per shift
+    waktu = hitung_breakdown_waktu(events)
+
     return {
         "total_event": total_event,
         "total_dual": total_dual,
@@ -404,6 +526,13 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame) -> dict:
         "container_load": container_load,
         "container_disc": container_disc,
         "container_total": container_total,
+        "total_20ft": total_20ft,
+        "total_bukan_20ft": total_bukan_20ft,
+        "pct_20ft_of_total": pct_20ft_of_total,
+        "crane_performa": crane_performa,
+        "daily": waktu["daily"],
+        "shift": waktu["shift"],
+        "day_shift": waktu["day_shift"],
         "monthly": monthly,
     }
 
@@ -464,7 +593,7 @@ def proses_analisis_lengkap(
         progress_callback(92, "Menyusun ringkasan metrik KPI...", "Agregasi produktivitas kapal")
 
     out_df = gabungkan_hasil(df_combo, events, event_id_map)
-    summary = hitung_ringkasan(events, out_df)
+    summary = hitung_ringkasan(events, out_df, size_eligible)
 
     if progress_callback:
         progress_callback(100, "Analisis komputasi selesai!", "Menyiapkan dashboard visualisasi...")
