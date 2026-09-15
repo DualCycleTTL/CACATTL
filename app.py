@@ -8,8 +8,10 @@ evaluasi rasio Dual Cycle, utilisasi Twin Lift, serta agregasi produktivitas per
 
 from pathlib import Path
 import time
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -524,56 +526,63 @@ with st.container(border=True):
         daily_df = summary["daily"]
         day_shift_df = summary["day_shift"]
 
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            if len(shift_df) > 0:
-                shift_pct = shift_df.melt(
-                    id_vars="SHIFT",
-                    value_vars=["dual", "non_dual"],
-                    var_name="Kategori",
-                    value_name="Jumlah",
-                )
-                shift_pct["Kategori"] = shift_pct["Kategori"].map(
-                    {"dual": "Dual Cycle", "non_dual": "Non Dual"}
-                )
-                fig_shift = px.bar(
-                    shift_pct,
-                    x="SHIFT",
-                    y="Jumlah",
-                    color="Kategori",
-                    barmode="stack",
-                    title="Dual Cycle vs Non Dual per Shift",
-                    color_discrete_map={"Dual Cycle": "#0284C7", "Non Dual": "#94A3B8"},
-                    text_auto=True,
-                )
-                fig_shift.update_layout(xaxis=dict(title=""), yaxis=dict(title="Jumlah Event"))
-                apply_glass_theme(fig_shift)
-                st.plotly_chart(fig_shift, width="stretch")
-            else:
-                st.info("Tidak ada data shift pada hasil analisis ini.")
+        # --- Chart 1: Dual vs Non Dual per Shift (jumlah + persentase) ---
+        if len(shift_df) > 0:
+            shift_pct = shift_df.melt(
+                id_vars="SHIFT",
+                value_vars=["dual", "non_dual"],
+                var_name="Kategori",
+                value_name="Jumlah",
+            )
+            shift_pct["Kategori"] = shift_pct["Kategori"].map(
+                {"dual": "Dual Cycle", "non_dual": "Non Dual"}
+            )
+            shift_pct["Total_Shift"] = shift_pct.groupby("SHIFT")["Jumlah"].transform("sum")
+            shift_pct["Persen"] = np.where(
+                shift_pct["Total_Shift"] > 0, shift_pct["Jumlah"] / shift_pct["Total_Shift"] * 100, 0
+            )
+            shift_pct["Label"] = (
+                shift_pct["Jumlah"].apply(format_number) + " (" + shift_pct["Persen"].round(1).astype(str) + "%)"
+            )
 
-        with sc2:
-            if len(shift_df) > 0:
-                shift_disp = shift_df.copy()
-                shift_disp["% Dual Cycle"] = (shift_disp["pct_dual"] * 100).round(1)
-                shift_disp["% Twinlift"] = (shift_disp["pct_twinlift"] * 100).round(1)
-                shift_disp = shift_disp.rename(
-                    columns={
-                        "SHIFT": "Shift",
-                        "total_event": "Total Event",
-                        "dual": "Dual Cycle",
-                        "non_dual": "Non Dual",
-                        "twinlift": "Twinlift",
-                    }
-                )[["Shift", "Total Event", "Dual Cycle", "Non Dual", "% Dual Cycle", "Twinlift", "% Twinlift"]]
-                st.dataframe(shift_disp, use_container_width=True, hide_index=True)
+            fig_shift = px.bar(
+                shift_pct,
+                x="SHIFT",
+                y="Jumlah",
+                color="Kategori",
+                barmode="stack",
+                title="Dual Cycle vs Non Dual per Shift (Jumlah & %)",
+                color_discrete_map={"Dual Cycle": "#0284C7", "Non Dual": "#94A3B8"},
+                text="Label",
+            )
+            fig_shift.update_traces(textposition="inside", insidetextanchor="middle")
+            fig_shift.update_layout(xaxis=dict(title=""), yaxis=dict(title="Jumlah Event"))
+            apply_glass_theme(fig_shift)
+            st.plotly_chart(fig_shift, width="stretch")
+        else:
+            st.info("Tidak ada data shift pada hasil analisis ini.")
 
-        if len(daily_df) > 0:
+        # --- Chart 2 & 3: Detail Harian, difilter per bulan supaya tetap terbaca ---
+        if len(daily_df) > 0 and len(day_shift_df) > 0:
+            daily_df = daily_df.copy()
+            daily_df["BULAN"] = daily_df["TANGGAL"].str[:7]
+            bulan_opsi = sorted(daily_df["BULAN"].unique().tolist())
+
+            bulan_terpilih = st.selectbox(
+                "Pilih Bulan untuk Detail Harian x Shift",
+                bulan_opsi,
+                index=len(bulan_opsi) - 1,
+                key="bulan_detail_dual_cycle",
+            )
+
+            daily_filt = daily_df[daily_df["BULAN"] == bulan_terpilih]
+            day_shift_filt = day_shift_df[day_shift_df["TANGGAL"].str[:7] == bulan_terpilih].copy()
+
             fig_daily = px.line(
-                daily_df,
+                daily_filt,
                 x="TANGGAL",
                 y="pct_dual",
-                title="Tren % Dual Cycle Harian",
+                title=f"Tren % Dual Cycle Harian — {bulan_terpilih}",
                 markers=True,
             )
             fig_daily.update_traces(line_color="#0284C7")
@@ -584,36 +593,40 @@ with st.container(border=True):
             apply_glass_theme(fig_daily)
             st.plotly_chart(fig_daily, width="stretch")
 
-        if len(day_shift_df) > 0:
-            fig_day_shift = px.bar(
-                day_shift_df,
-                x="TANGGAL",
-                y="dual",
-                color="SHIFT",
-                barmode="group",
-                title="Dual Cycle per Hari, Dipecah per Shift",
-                labels={"dual": "Jumlah Dual Cycle", "TANGGAL": "Tanggal", "SHIFT": "Shift"},
-            )
-            apply_glass_theme(fig_day_shift)
-            st.plotly_chart(fig_day_shift, width="stretch")
+            if len(day_shift_filt) > 0:
+                shift_order = [
+                    "Shift 1 (00.00-08.00)",
+                    "Shift 2 (08.00-16.00)",
+                    "Shift 3 (16.00-00.00)",
+                ]
+                pivot_pct = day_shift_filt.pivot(index="SHIFT", columns="TANGGAL", values="pct_dual") * 100
+                pivot_pct = pivot_pct.reindex([s for s in shift_order if s in pivot_pct.index])
+                z_vals = pivot_pct.to_numpy()
 
-            with st.expander("Lihat tabel detail Dual Cycle per Hari x Shift"):
-                dsd = day_shift_df.rename(
-                    columns={
-                        "TANGGAL": "Tanggal",
-                        "SHIFT": "Shift",
-                        "total_event": "Total Event",
-                        "dual": "Dual Cycle",
-                        "non_dual": "Non Dual",
-                    }
-                ).copy()
-                dsd["% Dual Cycle"] = (dsd["pct_dual"] * 100).round(1)
-                st.dataframe(
-                    dsd[["Tanggal", "Shift", "Total Event", "Dual Cycle", "Non Dual", "% Dual Cycle"]],
-                    use_container_width=True,
-                    hide_index=True,
-                    height=320,
+                fig_heat = go.Figure(
+                    data=go.Heatmap(
+                        z=z_vals,
+                        x=pivot_pct.columns.tolist(),
+                        y=pivot_pct.index.tolist(),
+                        colorscale=[[0.0, "#1e293b"], [0.5, "#0EA5E9"], [1.0, "#0284C7"]],
+                        zmin=0,
+                        zmax=100,
+                        text=np.round(z_vals, 1),
+                        texttemplate="%{text}%",
+                        textfont=dict(size=10, color="#ffffff"),
+                        hovertemplate="Tanggal: %{x}<br>Shift: %{y}<br>%% Dual Cycle: %{z:.1f}%<extra></extra>",
+                        colorbar=dict(title="% Dual", ticksuffix="%"),
+                    )
                 )
+                fig_heat.update_layout(title=f"Heatmap % Dual Cycle — Hari x Shift ({bulan_terpilih})")
+                apply_glass_theme(fig_heat)
+                fig_heat.update_layout(margin=dict(t=56, b=90, l=170, r=20))
+                fig_heat.update_xaxes(tickangle=-45)
+                st.plotly_chart(fig_heat, width="stretch")
+            else:
+                st.info("Tidak ada data pada bulan yang dipilih.")
+        else:
+            st.info("Tidak ada data harian pada hasil analisis ini.")
 
     # ----------------------------------------------------------------
     # TAB 2: TWINLIFT
