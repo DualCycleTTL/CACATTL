@@ -233,7 +233,17 @@ with st.container(border=True):
 
     # Pemetaan Kolom Crane (QC) — dipakai sebagai syarat tambahan 'sama crane'
     # pada deteksi Twinlift, serta laporan performa Twinlift per Crane.
-    crane_guess_idx = guess(cols, ["crane", "qc_id", "qc", "gantry", "quay"])
+    # Dikecualikan dari kandidat: kolom yang sudah dipakai sebagai kolom truk
+    # (mis. skema 'CHE_ID' vs 'CAR_CHE_ID' — keduanya sama-sama mengandung 'che').
+    truck_col_terpilih = col_map["truck"]
+    crane_kandidat = [c for c in cols if c != truck_col_terpilih]
+    crane_keywords = ["crane", "qc_id", "qc", "gantry", "quay", "che_id", "che"]
+    if crane_kandidat:
+        nama_tebakan_crane = crane_kandidat[guess(crane_kandidat, crane_keywords)]
+        crane_guess_idx = cols.index(nama_tebakan_crane)
+    else:
+        crane_guess_idx = 0
+
     with st.expander("⚙️ Pengaturan Lanjutan: Kolom Crane (untuk performa Twinlift per Crane)", expanded=False):
         crane_col_pilihan = st.selectbox(
             "Pilih kolom yang berisi ID/Nomor Crane (QC):",
