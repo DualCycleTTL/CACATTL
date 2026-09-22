@@ -3,19 +3,29 @@ Modul Visualisasi & Tema Grafik Glassmorphism
 Terminal Teluk Lamong - Pelindo
 
 Menyediakan utilitas styling transparansi glassmorphism maritim untuk Plotly Charts.
+
+CATATAN: file ini hanya berisi fungsi `apply_glass_theme` yang kamu kirim
+(rapikan formatting dari versi yang sebelumnya rusak indentasinya). Jika
+modules/charts.py kamu punya fungsi lain (misalnya palet warna, helper
+chart lain, dsb), gabungkan fungsi di bawah ini ke file aslimu — jangan
+timpa seluruh file dengan file ini kalau ada fungsi lain yang hilang.
 """
 
-def apply_glass_theme(fig, title: str = None, *args, **kwargs):
+import plotly.graph_objects as go
+
+
+def apply_glass_theme(fig: go.Figure, title: str = None, *args, **kwargs) -> go.Figure:
     """
     Menerapkan layout tema transparent glassmorphism maritim pada objek Plotly Figure
     dengan tipografi Plus Jakarta Sans dan warna kontras tinggi.
     """
     default_margin = dict(t=56, b=30, l=40, r=20)
     if fig.layout.margin:
-        for k in ['t', 'b', 'l', 'r']:
+        for k in ["t", "b", "l", "r"]:
             val = getattr(fig.layout.margin, k, None)
             if val is not None:
                 default_margin[k] = val
+
     margin = kwargs.get("margin")
     if margin:
         default_margin.update(margin)
