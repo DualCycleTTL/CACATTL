@@ -201,6 +201,22 @@ def layer1_combo(df: pd.DataFrame, ambang_combo: float, size_eligible: int) -> p
     return out
 
 
+def crane_bisa_twinlift(crane_id: pd.Series) -> np.ndarray:
+    """
+    Menentukan kapabilitas fisik crane (QC) untuk melakukan Twin Lift
+    berdasarkan akhiran (suffix) penamaan CRANE_ID:
+    - Akhiran 'I' -> crane ber-spreader Twin/telescopic, BISA Twinlift.
+    - Akhiran 'D' (atau akhiran lain selain 'I') -> crane ber-spreader
+      Single, TIDAK BISA Twinlift sama sekali, apapun kondisi lainnya
+      (kapal sama, truk sama, selisih waktu dekat, dsb tetap tidak relevan).
+
+    Contoh: '02D', '01D' -> False (single spreader, mustahil twinlift).
+            '02I', '01I' -> True (twin spreader, eligible dicek syarat lain).
+    """
+    s = crane_id.astype(str).str.strip().str.upper()
+    return s.str.endswith("I").to_numpy()
+
+
 def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligible: int):
     """
     Layer 1b: Deteksi kondisi Twin Lift di dalam grup Combo. Syarat lengkap:
@@ -210,6 +226,9 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
        dibentuk dari pasangan dalam truk yang sama (Layer 1)
     4. CRANE_ID (Crane/QC) sama
     5. Selisih DISC_LOAD_TS <= ambang_twinlift
+    6. Crane tsb secara fisik BISA Twinlift (spreader Twin, akhiran ID 'I').
+       Crane ber-spreader Single (akhiran 'D') mustahil Twinlift, jadi
+       langsung didiskualifikasi di sini walau 5 syarat lain terpenuhi.
     Dioptimalkan secara vektorisasi NumPy (~400x lebih cepat daripada groupby loop).
     """
     grp_sizes = df_combo["GROUP_ID"].value_counts()
@@ -233,8 +252,11 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
         syarat_crane = r1["CRANE_ID"].to_numpy() == r2["CRANE_ID"].to_numpy()
         gap_mins = np.abs((r2["TS_G"].to_numpy() - r1["TS_G"].to_numpy()) / np.timedelta64(1, "m"))
         syarat_waktu = gap_mins <= ambang_twinlift
+        # Syarat kapabilitas fisik: crane harus ber-spreader Twin (akhiran 'I').
+        # Karena syarat_crane sudah memastikan r1 & r2 crane sama, cukup cek r1.
+        syarat_spreader = crane_bisa_twinlift(r1["CRANE_ID"])
 
-        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu
+        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu & syarat_spreader
         statuses = np.where(is_twin, "Twinlift", "Bukan Twinlift")
         rounded_gaps = np.round(gap_mins, 2)
 
