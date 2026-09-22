@@ -12,6 +12,16 @@ Berisi algoritma komputasi multi-layer:
 6. Penomoran Urut Event ID Global
 7. Perhitungan Ringkasan Metrik, KPI Bulanan, Breakdown Harian/Shift,
    & Performa Crane dalam Twinlift
+
+CATATAN PERBAIKAN LOGIKA (basis kontainer 20ft):
+Combo & Twinlift secara definisi HANYA mungkin terjadi pada kontainer 20ft
+(lihat SIZE_ELIGIBLE). Jika persentase Combo/Single atau Twinlift/Bukan
+Twinlift dihitung atas SELURUH kontainer (termasuk 40ft dst yang memang
+tidak pernah eligible), angkanya jadi bias rendah secara palsu. Karena itu
+seluruh breakdown Combo/Single & Twinlift/Bukan Twinlift di modul ini
+sekarang dihitung dengan basis populasi kontainer 20ft saja
+(lihat df20 / total_20ft / *_20ft di hitung_ringkasan, monthly_20ft, dan
+kolom pct_twinlift_dari_20ft di hitung_performa_crane).
 """
 
 import re
@@ -352,7 +362,9 @@ def hitung_performa_crane(out_df: pd.DataFrame, size_eligible: int) -> pd.DataFr
     - total_20ft              : kontainer size 20ft yang ditangani crane tsb
     - total_twinlift          : kontainer yang berstatus Twinlift
     - pct_twinlift_dari_total : total_twinlift / total_kontainer
-    - pct_twinlift_dari_20ft  : total_twinlift / total_20ft (basis kontainer eligible)
+    - pct_twinlift_dari_20ft  : total_twinlift / total_20ft (basis kontainer eligible —
+                                 metrik UTAMA, karena Twinlift memang hanya mungkin
+                                 terjadi pada kontainer 20ft)
     """
     df = out_df.copy()
     df["_is_twinlift"] = (df["TWINLIFT_STATUS"] == "Twinlift").astype(int)
@@ -370,8 +382,10 @@ def hitung_performa_crane(out_df: pd.DataFrame, size_eligible: int) -> pd.DataFr
     crane["pct_twinlift_dari_20ft"] = np.where(
         crane["total_20ft"] > 0, crane["total_twinlift"] / crane["total_20ft"], 0
     )
+    # Diurutkan berdasarkan % Twinlift dari basis 20ft (metrik yang benar secara
+    # definisi), bukan dari total seluruh kontainer yang ditangani crane.
     crane = crane.sort_values(
-        ["pct_twinlift_dari_total", "total_twinlift"], ascending=[False, False]
+        ["pct_twinlift_dari_20ft", "total_twinlift"], ascending=[False, False]
     ).reset_index(drop=True)
     return crane
 
@@ -382,6 +396,11 @@ def hitung_breakdown_waktu(events: pd.DataFrame) -> dict:
     - per hari (TANGGAL)
     - per shift (3 shift kerja: 00.00-08.00, 08.00-16.00, 16.00-00.00)
     - per hari x shift (gabungan, untuk melihat tren shift dari hari ke hari)
+
+    Catatan: breakdown ini berbasis EVENT (ritase truk) untuk Dual Cycle, yang
+    memang tidak terkait ukuran kontainer. Untuk breakdown Combo/Single &
+    Twinlift/Bukan Twinlift berbasis kontainer 20ft, lihat monthly_20ft di
+    hitung_ringkasan().
     """
     ev = events.copy()
     ev["TANGGAL"] = ev["START_TS"].dt.date
@@ -457,10 +476,30 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: 
     container_disc = dual_disc + single_disc
     container_total = len(out_df)
 
-    # Info jumlah kontainer 20ft (basis eligible Combo/Twinlift)
-    total_20ft = int((out_df["CTR_SIZE"] == size_eligible).sum())
+    # ============================================================
+    # PERBAIKAN LOGIKA: basis Combo/Single & Twinlift/Bukan Twinlift
+    # adalah populasi KONTAINER 20FT SAJA — bukan seluruh kontainer.
+    # Combo & Twinlift secara definisi cuma mungkin terjadi pada 20ft,
+    # jadi menghitung %-nya atas seluruh kontainer (termasuk 40ft dst
+    # yang memang tidak pernah eligible) akan bias rendah secara palsu.
+    # ============================================================
+    df20 = out_df[out_df["CTR_SIZE"] == size_eligible]
+    total_20ft = int(len(df20))
     total_bukan_20ft = container_total - total_20ft
     pct_20ft_of_total = (total_20ft / container_total) if container_total else 0
+
+    # --- Combo vs Single, basis kontainer 20ft ---
+    combo_20ft = int((df20["CONTAINER_STATUS"] == "Combo").sum())
+    single_20ft = total_20ft - combo_20ft
+    pct_combo_20ft = (combo_20ft / total_20ft) if total_20ft else 0
+    pct_single_20ft = (single_20ft / total_20ft) if total_20ft else 0
+
+    # --- Twinlift vs Bukan Twinlift, basis kontainer 20ft ---
+    total_twinlift_kontainer = int((df20["TWINLIFT_STATUS"] == "Twinlift").sum())
+    combo_bukan_twinlift_kontainer = int((df20["TWINLIFT_STATUS"] == "Bukan Twinlift").sum())
+    total_bukan_twinlift_kontainer = total_20ft - total_twinlift_kontainer
+    pct_twinlift_of_20ft = (total_twinlift_kontainer / total_20ft) if total_20ft else 0
+    pct_bukan_twinlift_of_20ft = (total_bukan_twinlift_kontainer / total_20ft) if total_20ft else 0
 
     ev = events.copy()
     ev["BULAN"] = ev["START_TS"].dt.to_period("M")
@@ -497,10 +536,48 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: 
     monthly = monthly.sort_index()
     monthly.index = monthly.index.astype(str)
 
-    # Performa Crane (QC) dalam pembentukan Twinlift
+    # ------------------------------------------------------------
+    # Agregasi bulanan KHUSUS basis kontainer 20ft, untuk Combo/Single
+    # & Twinlift/Bukan Twinlift (menggantikan pct_combo/pct_single/
+    # pct_twinlift bulanan lama yang basisnya salah/seluruh kontainer).
+    # ------------------------------------------------------------
+    if total_20ft > 0:
+        df20m = df20.copy()
+        df20m["BULAN"] = df20m["TS_G"].dt.to_period("M")
+        monthly_20ft = df20m.groupby("BULAN").agg(
+            total_20ft=("CTR_SIZE", "size"),
+            combo=("CONTAINER_STATUS", lambda s: int((s == "Combo").sum())),
+            twinlift=("TWINLIFT_STATUS", lambda s: int((s == "Twinlift").sum())),
+        )
+        monthly_20ft["single"] = monthly_20ft["total_20ft"] - monthly_20ft["combo"]
+        monthly_20ft["bukan_twinlift"] = monthly_20ft["total_20ft"] - monthly_20ft["twinlift"]
+        monthly_20ft["pct_combo"] = np.where(
+            monthly_20ft["total_20ft"] > 0, monthly_20ft["combo"] / monthly_20ft["total_20ft"], 0
+        )
+        monthly_20ft["pct_single"] = np.where(
+            monthly_20ft["total_20ft"] > 0, monthly_20ft["single"] / monthly_20ft["total_20ft"], 0
+        )
+        monthly_20ft["pct_twinlift"] = np.where(
+            monthly_20ft["total_20ft"] > 0, monthly_20ft["twinlift"] / monthly_20ft["total_20ft"], 0
+        )
+        monthly_20ft["pct_bukan_twinlift"] = np.where(
+            monthly_20ft["total_20ft"] > 0, monthly_20ft["bukan_twinlift"] / monthly_20ft["total_20ft"], 0
+        )
+        monthly_20ft = monthly_20ft.sort_index()
+        monthly_20ft.index = monthly_20ft.index.astype(str)
+    else:
+        monthly_20ft = pd.DataFrame(
+            columns=[
+                "total_20ft", "combo", "twinlift", "single", "bukan_twinlift",
+                "pct_combo", "pct_single", "pct_twinlift", "pct_bukan_twinlift",
+            ]
+        )
+
+    # Performa Crane (QC) dalam pembentukan Twinlift (basis 20ft ada di dalamnya)
     crane_performa = hitung_performa_crane(out_df, size_eligible)
 
-    # Breakdown Dual Cycle & Twinlift per hari dan per shift
+    # Breakdown Dual Cycle per hari dan per shift (basis event/ritase — tidak
+    # terkait ukuran kontainer, jadi tetap dihitung dari seluruh event)
     waktu = hitung_breakdown_waktu(events)
 
     return {
@@ -529,11 +606,22 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: 
         "total_20ft": total_20ft,
         "total_bukan_20ft": total_bukan_20ft,
         "pct_20ft_of_total": pct_20ft_of_total,
+        # --- Metrik baru: basis kontainer 20ft (FIX logika) ---
+        "combo_20ft": combo_20ft,
+        "single_20ft": single_20ft,
+        "pct_combo_20ft": pct_combo_20ft,
+        "pct_single_20ft": pct_single_20ft,
+        "total_twinlift_kontainer": total_twinlift_kontainer,
+        "combo_bukan_twinlift_kontainer": combo_bukan_twinlift_kontainer,
+        "total_bukan_twinlift_kontainer": total_bukan_twinlift_kontainer,
+        "pct_twinlift_of_20ft": pct_twinlift_of_20ft,
+        "pct_bukan_twinlift_of_20ft": pct_bukan_twinlift_of_20ft,
         "crane_performa": crane_performa,
         "daily": waktu["daily"],
         "shift": waktu["shift"],
         "day_shift": waktu["day_shift"],
         "monthly": monthly,
+        "monthly_20ft": monthly_20ft,
     }
 
 
