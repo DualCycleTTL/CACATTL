@@ -8,7 +8,8 @@ Berisi algoritma komputasi multi-layer:
 3. Layer 1b: Deteksi Twin Lift (Sama Kapal, Sama Truk, Sama Crane/QC & Delta
    Waktu DISC_LOAD_TS)
 4. Pembentukan Event Ritase Truk
-5. Layer 2: Deteksi Dual Cycle (Lintas Aktivitas LOAD vs DISC)
+5. Layer 2: Deteksi Dual Cycle (Lintas Aktivitas LOAD vs DISC) + klasifikasi
+   Dual Cycle Murni (1 kapal) vs Campuran (melibatkan kapal lain)
 6. Penomoran Urut Event ID Global
 7. Perhitungan Ringkasan Metrik, KPI Bulanan, Breakdown Harian/Shift,
    & Performa Crane dalam Twinlift
@@ -201,34 +202,19 @@ def layer1_combo(df: pd.DataFrame, ambang_combo: float, size_eligible: int) -> p
     return out
 
 
-def crane_bisa_twinlift(crane_id: pd.Series) -> np.ndarray:
-    """
-    Menentukan kapabilitas fisik crane (QC) untuk melakukan Twin Lift
-    berdasarkan akhiran (suffix) penamaan CRANE_ID:
-    - Akhiran 'I' -> crane ber-spreader Twin/telescopic, BISA Twinlift.
-    - Akhiran 'D' (atau akhiran lain selain 'I') -> crane ber-spreader
-      Single, TIDAK BISA Twinlift sama sekali, apapun kondisi lainnya
-      (kapal sama, truk sama, selisih waktu dekat, dsb tetap tidak relevan).
-
-    Contoh: '02D', '01D' -> False (single spreader, mustahil twinlift).
-            '02I', '01I' -> True (twin spreader, eligible dicek syarat lain).
-    """
-    s = crane_id.astype(str).str.strip().str.upper()
-    return s.str.endswith("I").to_numpy()
-
-
 def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligible: int):
     """
-    Layer 1b: Deteksi kondisi Twin Lift di dalam grup Combo. Syarat lengkap:
+    Layer 1b: Deteksi kondisi Twin Lift di dalam grup Combo. Twin Lift berlaku
+    untuk kegiatan di dermaga, baik bongkar (DISC) maupun muat (LOAD): Combo
+    dibentuk per aktivitas, sehingga 2 kontainer dalam 1 Combo selalu punya
+    aktivitas yang sama, dan tidak ada filter yang membatasi hanya DISC.
+    Syarat lengkap:
     1. Ukuran 20ft
     2. VES_ID (kapal) sama
     3. CAR_CHE_ID (truk) sama — sudah otomatis terjamin karena Combo hanya
        dibentuk dari pasangan dalam truk yang sama (Layer 1)
     4. CRANE_ID (Crane/QC) sama
     5. Selisih DISC_LOAD_TS <= ambang_twinlift
-    6. Crane tsb secara fisik BISA Twinlift (spreader Twin, akhiran ID 'I').
-       Crane ber-spreader Single (akhiran 'D') mustahil Twinlift, jadi
-       langsung didiskualifikasi di sini walau 5 syarat lain terpenuhi.
     Dioptimalkan secara vektorisasi NumPy (~400x lebih cepat daripada groupby loop).
     """
     grp_sizes = df_combo["GROUP_ID"].value_counts()
@@ -252,11 +238,8 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
         syarat_crane = r1["CRANE_ID"].to_numpy() == r2["CRANE_ID"].to_numpy()
         gap_mins = np.abs((r2["TS_G"].to_numpy() - r1["TS_G"].to_numpy()) / np.timedelta64(1, "m"))
         syarat_waktu = gap_mins <= ambang_twinlift
-        # Syarat kapabilitas fisik: crane harus ber-spreader Twin (akhiran 'I').
-        # Karena syarat_crane sudah memastikan r1 & r2 crane sama, cukup cek r1.
-        syarat_spreader = crane_bisa_twinlift(r1["CRANE_ID"])
 
-        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu & syarat_spreader
+        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu
         statuses = np.where(is_twin, "Twinlift", "Bukan Twinlift")
         rounded_gaps = np.round(gap_mins, 2)
 
@@ -312,6 +295,11 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
 
     assigned = np.zeros(n, dtype=bool)
     status = np.array(["Non Dual"] * n, dtype=object)
+    # ID pasangan Dual Cycle (0 = bukan Dual Cycle). Dipakai untuk membedakan
+    # Dual Cycle "murni" (semua kontainer dalam pasangan dari 1 kapal) vs
+    # "campuran" (pasangan melibatkan kapal lain) pada analisis per vessel.
+    pair_id = np.zeros(n, dtype=int)
+    nxt_pair = 0
 
     pairs = []
     truck_positions = events.groupby("CAR_CHE_ID").indices
@@ -341,12 +329,35 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
     pairs.sort(key=lambda x: (x[2], x[0], x[1]))
     for i, k, _gap in pairs:
         if not assigned[i] and not assigned[k]:
+            nxt_pair += 1
             status[i] = "Dual Cycle"
             status[k] = "Dual Cycle"
+            pair_id[i] = nxt_pair
+            pair_id[k] = nxt_pair
             assigned[i] = assigned[k] = True
 
     out = events.copy()
     out["STATUS"] = status
+    out["DUAL_PAIR_ID"] = pair_id
+    return out
+
+
+def klasifikasi_dual_murni_campuran(out_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Menandai tiap baris kontainer berstatus Dual Cycle sebagai:
+    - "Murni"    : seluruh kontainer dalam pasangan Dual Cycle-nya (event DISC
+                   + event LOAD, termasuk kontainer Combo-nya) berasal dari
+                   SATU kapal yang sama.
+    - "Campuran" : pasangan Dual Cycle-nya melibatkan kontainer dari kapal lain.
+    - "-"        : bukan Dual Cycle.
+    Hasil disimpan di kolom DUAL_JENIS.
+    """
+    out = out_df.copy()
+    out["DUAL_JENIS"] = "-"
+    is_dual = (out["STATUS"] == "Dual Cycle") & (out["DUAL_PAIR_ID"] > 0)
+    if is_dual.any():
+        n_kapal = out.loc[is_dual].groupby("DUAL_PAIR_ID")["VES_ID"].transform("nunique")
+        out.loc[is_dual, "DUAL_JENIS"] = np.where(n_kapal == 1, "Murni", "Campuran")
     return out
 
 
@@ -367,7 +378,10 @@ def beri_event_id(events: pd.DataFrame, df_asli: pd.DataFrame):
 
 def gabungkan_hasil(df: pd.DataFrame, events: pd.DataFrame, event_id_map: dict) -> pd.DataFrame:
     """Menggabungkan status komputasi kembali ke DataFrame awal per baris kontainer (vektorisasi cepat via merge)."""
-    cols_to_merge = ["GROUP_ID", "EVENT_ID", "CONTAINER_STATUS", "STATUS", "TWINLIFT_STATUS", "TWINLIFT_GAP_MENIT"]
+    cols_to_merge = [
+        "GROUP_ID", "EVENT_ID", "CONTAINER_STATUS", "STATUS", "DUAL_PAIR_ID",
+        "TWINLIFT_STATUS", "TWINLIFT_GAP_MENIT",
+    ]
     out = df.merge(events[cols_to_merge], on="GROUP_ID", how="left")
     out = out.drop(columns=["GROUP_ID", "ROW_IDX"])
     return out
@@ -703,6 +717,7 @@ def proses_analisis_lengkap(
         progress_callback(92, "Menyusun ringkasan metrik KPI...", "Agregasi produktivitas kapal")
 
     out_df = gabungkan_hasil(df_combo, events, event_id_map)
+    out_df = klasifikasi_dual_murni_campuran(out_df)
     summary = hitung_ringkasan(events, out_df, size_eligible)
 
     if progress_callback:
