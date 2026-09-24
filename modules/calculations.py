@@ -38,6 +38,11 @@ AMBANG_COMBO_MENIT_DEFAULT = 40
 AMBANG_DUAL_MENIT_DEFAULT = 240  # 4 jam
 AMBANG_TWINLIFT_MENIT_DEFAULT = 1  # 1 menit selisih DISC_LOAD_TS
 SIZE_ELIGIBLE = 20  # Ukuran kontainer eligible Combo/Twinlift (20ft)
+# Twinlift hanya mungkin di kade internasional. Crane kade internasional ber-ID
+# berakhiran "I" (mis. 03I); crane kade domestik berakhiran "D" (mis. 04D)
+# tidak bisa Twinlift, jadi hasilnya selalu 0.
+CRANE_INTERNASIONAL_SUFFIX = "I"
+CRANE_TIDAK_DIKETAHUI = "(Tidak Diketahui)"  # kolom crane tidak dipetakan
 
 _VBA_VAL_RE = re.compile(r"^\s*[+-]?\d+(\.\d+)?")
 
@@ -214,7 +219,9 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
     3. CAR_CHE_ID (truk) sama — sudah otomatis terjamin karena Combo hanya
        dibentuk dari pasangan dalam truk yang sama (Layer 1)
     4. CRANE_ID (Crane/QC) sama
-    5. Selisih DISC_LOAD_TS <= ambang_twinlift
+    5. Crane kade internasional (ID berakhiran "I"). Crane kade domestik
+       (berakhiran "D") tidak bisa Twinlift, sehingga selalu "Bukan Twinlift"
+    6. Selisih DISC_LOAD_TS <= ambang_twinlift
     Dioptimalkan secara vektorisasi NumPy (~400x lebih cepat daripada groupby loop).
     """
     grp_sizes = df_combo["GROUP_ID"].value_counts()
@@ -239,7 +246,16 @@ def deteksi_twinlift(df_combo: pd.DataFrame, ambang_twinlift: float, size_eligib
         gap_mins = np.abs((r2["TS_G"].to_numpy() - r1["TS_G"].to_numpy()) / np.timedelta64(1, "m"))
         syarat_waktu = gap_mins <= ambang_twinlift
 
-        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_waktu
+        # Hanya crane kade internasional (ID berakhiran "I") yang boleh Twinlift.
+        # Jika kolom crane tidak dipetakan, aturan ini tidak bisa diterapkan
+        # sehingga dilewati (perilaku lama dipertahankan).
+        crane_id_txt = r1["CRANE_ID"].astype(str).str.strip()
+        syarat_kade_intl = (
+            crane_id_txt.str.upper().str.endswith(CRANE_INTERNASIONAL_SUFFIX)
+            | (crane_id_txt == CRANE_TIDAK_DIKETAHUI)
+        ).to_numpy()
+
+        is_twin = syarat_size & syarat_kapal & syarat_crane & syarat_kade_intl & syarat_waktu
         statuses = np.where(is_twin, "Twinlift", "Bukan Twinlift")
         rounded_gaps = np.round(gap_mins, 2)
 
@@ -653,6 +669,7 @@ def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: 
         "pct_twinlift_of_20ft": pct_twinlift_of_20ft,
         "pct_bukan_twinlift_of_20ft": pct_bukan_twinlift_of_20ft,
         "crane_performa": crane_performa,
+        "aturan_twinlift_crane": CRANE_INTERNASIONAL_SUFFIX,
         "daily": waktu["daily"],
         "shift": waktu["shift"],
         "day_shift": waktu["day_shift"],
