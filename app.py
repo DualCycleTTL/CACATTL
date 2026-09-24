@@ -211,14 +211,15 @@ with st.container(border=True):
             value=AMBANG_TWINLIFT_MENIT_DEFAULT,
             step=1,
             help=(
-                "Jarak waktu maksimum DISC_LOAD_TS antar 2 kontainer dalam 1 Combo 20ft, "
+                "Jarak waktu maksimum DISC_LOAD_TS antar 2 kontainer dalam 1 Combo 20ft "
+                "pada kegiatan di dermaga, baik bongkar (DISC) maupun muat (LOAD), "
                 "yang berasal dari kapal (VES_ID), truk, & Crane (QC) yang sama, "
                 "supaya dianggap 'Twinlift'."
             ),
         )
         render_html(
             '<div class="step2-param-hint" style="font-size:0.75rem;color:#94a3b8;margin-top:-8px;line-height:1.35;margin-bottom:2px;">'
-            'Maks. gap waktu angkat 2 kontainer Combo 20ft</div>'
+            'Maks. gap waktu angkat 2 kontainer Combo 20ft (DISC &amp; LOAD, crane sama)</div>'
         )
 
     # Pemetaan Kolom Otomatis
@@ -265,7 +266,13 @@ with st.container(border=True):
     # Peringatan jika hasil analisis sebelumnya sudah usang
     if "hasil" in st.session_state:
         _cached_summary = st.session_state["hasil"].get("summary", {})
-        if "total_bukan_twinlift_kontainer" not in _cached_summary or "monthly_20ft" not in _cached_summary:
+        _cached_out_df = st.session_state["hasil"].get("out_df")
+        if (
+            "total_bukan_twinlift_kontainer" not in _cached_summary
+            or "monthly_20ft" not in _cached_summary
+            or _cached_out_df is None
+            or "DUAL_JENIS" not in _cached_out_df.columns
+        ):
             st.session_state.pop("hasil", None)
             st.warning(
                 "Hasil analisis sebelumnya sudah usang. "
@@ -398,20 +405,28 @@ with st.container(border=True):
     # TAB 1: DUAL CYCLE
     # ----------------------------------------------------------------
     with tab_dual:
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        # Baris 1: total petikemas (basis kontainer) & total ritase (basis event truk)
+        k1, k2, k3, k4 = st.columns(4)
         with k1:
-            render_kpi_card("Total Event", format_number(summary["total_event"]), subtext="Ritase Truk", variant="purple")
+            render_kpi_card(
+                "Total Petikemas", format_number(summary["container_total"]), subtext="Semua Kontainer", variant="purple"
+            )
         with k2:
-            render_kpi_card("Dual Cycle", format_number(summary["total_dual"]), variant="blue")
+            render_kpi_card("Total Ritase", format_number(summary["total_event"]), subtext="Ritase Truk", variant="purple")
         with k3:
-            render_kpi_card("Non Dual", format_number(summary["total_single"]), variant="slate")
+            render_kpi_card("Container LOAD", format_number(summary["container_load"]), subtext="Total Muat", variant="amber")
         with k4:
+            render_kpi_card("Container DISC", format_number(summary["container_disc"]), subtext="Total Bongkar", variant="teal")
+
+        # Baris 2: hasil deteksi Dual Cycle (basis ritase)
+        k5, k6, k7 = st.columns(3)
+        with k5:
+            render_kpi_card("Dual Cycle", format_number(summary["total_dual"]), variant="blue")
+        with k6:
+            render_kpi_card("Non Dual", format_number(summary["total_single"]), variant="slate")
+        with k7:
             pct_dual_val = summary["pct_dual"] * 100
             render_kpi_card("% Dual Cycle", f"{pct_dual_val:.1f}%", variant="blue")
-        with k5:
-            render_kpi_card("Container LOAD", format_number(summary["container_load"]), subtext="Total Muat", variant="amber")
-        with k6:
-            render_kpi_card("Container DISC", format_number(summary["container_disc"]), subtext="Total Bongkar", variant="teal")
 
         cc1, cc2 = st.columns(2)
         with cc1:
@@ -755,7 +770,8 @@ with st.container(border=True):
         render_html(
             '<div style="font-size:0.8rem;color:#94a3b8;margin-top:-6px;margin-bottom:10px;line-height:1.4;">'
             'Syarat Twinlift: 2 kontainer 20ft dari kapal yang sama, diangkut truk yang sama, '
-            'DAN diangkat oleh Crane yang sama, dalam ambang waktu yang ditentukan. Persentase '
+            'DAN diangkat oleh Crane yang sama pada kegiatan di dermaga (bongkar DISC maupun '
+            'muat LOAD), dalam ambang waktu yang ditentukan. Persentase '
             'di bawah dihitung dari kontainer 20ft yang ditangani tiap crane, bukan dari seluruh '
             'kontainer yang ditangani crane tersebut.</div>'
         )
@@ -866,6 +882,10 @@ with st.container(border=True):
             non_twinlift_rec = total_rec - twinlift_rec
             combo_rec = int((vessel_df["CONTAINER_STATUS"] == "Combo").sum())
             single_rec = total_rec - combo_rec
+            # Dual Cycle Murni  : pasangan Dual Cycle hanya berisi kontainer kapal ini.
+            # Dual Cycle Campuran: pasangan Dual Cycle melibatkan kontainer kapal lain.
+            dual_murni_rec = int((vessel_df["DUAL_JENIS"] == "Murni").sum())
+            dual_campuran_rec = int((vessel_df["DUAL_JENIS"] == "Campuran").sum())
 
             v1, v2, v3, v4, v5 = st.columns(5)
             with v1:
@@ -880,6 +900,29 @@ with st.container(border=True):
             with v5:
                 pct_twin_v = (twinlift_rec / total_rec * 100) if total_rec else 0
                 render_kpi_card("% Twinlift", f"{pct_twin_v:.1f}%", variant="blue")
+
+            # Rincian tambahan per kapal: Twinlift, muatan Combo, Dual Cycle murni vs campuran
+            w1, w2, w3, w4 = st.columns(4)
+            with w1:
+                render_kpi_card("Jumlah Twinlift", format_number(twinlift_rec), subtext="Kontainer", variant="blue")
+            with w2:
+                render_kpi_card("Muatan Combo", format_number(combo_rec), subtext="Kontainer", variant="teal")
+            with w3:
+                pct_murni_v = (dual_murni_rec / dual_rec * 100) if dual_rec else 0
+                render_kpi_card(
+                    "Dual Cycle Murni",
+                    format_number(dual_murni_rec),
+                    subtext=f"{pct_murni_v:.1f}% dari Dual Cycle • kapal ini saja",
+                    variant="emerald",
+                )
+            with w4:
+                pct_campuran_v = (dual_campuran_rec / dual_rec * 100) if dual_rec else 0
+                render_kpi_card(
+                    "Dual Cycle Campuran",
+                    format_number(dual_campuran_rec),
+                    subtext=f"{pct_campuran_v:.1f}% dari Dual Cycle • dengan kapal lain",
+                    variant="amber",
+                )
 
             vc1, vc2 = st.columns(2)
             with vc1:
