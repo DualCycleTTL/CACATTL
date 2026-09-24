@@ -302,6 +302,17 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
     """
     Layer 2: Deteksi pasangan Dual Cycle lintas aktivitas (LOAD vs DISC)
     dalam truk yang sama.
+
+    Gap antar dua event dihitung dari akhir event yang lebih dulu sampai awal
+    event berikutnya. Karena titik awal/akhir tiap aktivitas berbeda, lokasi
+    pengukuran gap otomatis mengikuti urutan aktivitasnya:
+    - DISC dulu lalu LOAD -> gap di LAPANGAN (selesai stack DISC -> mulai
+      unstack LOAD, keduanya memakai STACK_UNSTACK_TS).
+    - LOAD dulu lalu DISC -> gap di DERMAGA (selesai muat LOAD -> mulai
+      bongkar DISC, keduanya memakai DISC_LOAD_TS).
+    Pasangan hanya dianggap Dual Cycle bila gap <= ambang_dual (menit).
+    Untuk tiap pasangan, dicatat: urutan, lokasi gap, gap (menit), ambang, dan
+    selisih ambang - gap (sisa toleransi).
     """
     events = events.reset_index(drop=True)
     n = len(events)
@@ -316,6 +327,10 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
     # "campuran" (pasangan melibatkan kapal lain) pada analisis per vessel.
     pair_id = np.zeros(n, dtype=int)
     nxt_pair = 0
+    dual_urutan = np.array(["-"] * n, dtype=object)
+    dual_lokasi = np.array(["-"] * n, dtype=object)
+    dual_gap = np.full(n, np.nan)
+    dual_sisa = np.full(n, np.nan)
 
     pairs = []
     truck_positions = events.groupby("CAR_CHE_ID").indices
@@ -343,7 +358,7 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
                     pairs.append((i, k, gap))
 
     pairs.sort(key=lambda x: (x[2], x[0], x[1]))
-    for i, k, _gap in pairs:
+    for i, k, gap in pairs:
         if not assigned[i] and not assigned[k]:
             nxt_pair += 1
             status[i] = "Dual Cycle"
@@ -352,10 +367,41 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
             pair_id[k] = nxt_pair
             assigned[i] = assigned[k] = True
 
+            # i selalu event yang mulai lebih dulu (pos_sorted urut START_TS)
+            urutan = f"{activity[i]} → {activity[k]}"
+            lokasi = "Lapangan" if activity[i] == "DISC" else "Dermaga"
+            gap_r = round(float(gap), 2)
+            sisa = round(float(ambang_dual) - gap_r, 2)
+            for idx in (i, k):
+                dual_urutan[idx] = urutan
+                dual_lokasi[idx] = lokasi
+                dual_gap[idx] = gap_r
+                dual_sisa[idx] = sisa
+
     out = events.copy()
     out["STATUS"] = status
     out["DUAL_PAIR_ID"] = pair_id
+    out["DUAL_URUTAN"] = dual_urutan
+    out["DUAL_GAP_LOKASI"] = dual_lokasi
+    out["DUAL_GAP_MENIT"] = dual_gap
+    out["DUAL_AMBANG_MENIT"] = np.where(pair_id > 0, float(ambang_dual), np.nan)
+    out["DUAL_SELISIH_AMBANG_MENIT"] = dual_sisa
     return out
+
+
+def isi_pasangan_dual(events: pd.DataFrame) -> pd.DataFrame:
+    """
+    Mengisi DUAL_PASANGAN_EVENT_ID: EVENT_ID dari event pasangan Dual Cycle-nya.
+    Dipanggil setelah EVENT_ID dibuat. Tiap pasangan berisi tepat 2 event,
+    sehingga pasangan = (jumlah EVENT_ID pasangan) - EVENT_ID sendiri.
+    """
+    events = events.copy()
+    events["DUAL_PASANGAN_EVENT_ID"] = np.nan
+    d = events[events["DUAL_PAIR_ID"] > 0]
+    if len(d) > 0:
+        total = d.groupby("DUAL_PAIR_ID")["EVENT_ID"].transform("sum")
+        events.loc[d.index, "DUAL_PASANGAN_EVENT_ID"] = total - d["EVENT_ID"]
+    return events
 
 
 def klasifikasi_dual_murni_campuran(out_df: pd.DataFrame) -> pd.DataFrame:
@@ -369,11 +415,12 @@ def klasifikasi_dual_murni_campuran(out_df: pd.DataFrame) -> pd.DataFrame:
     Hasil disimpan di kolom DUAL_JENIS.
     """
     out = out_df.copy()
-    out["DUAL_JENIS"] = "-"
+    jenis = pd.Series("-", index=out.index, dtype=object)
     is_dual = (out["STATUS"] == "Dual Cycle") & (out["DUAL_PAIR_ID"] > 0)
     if is_dual.any():
         n_kapal = out.loc[is_dual].groupby("DUAL_PAIR_ID")["VES_ID"].transform("nunique")
-        out.loc[is_dual, "DUAL_JENIS"] = np.where(n_kapal == 1, "Murni", "Campuran")
+        jenis.loc[is_dual] = np.where(n_kapal == 1, "Murni", "Campuran")
+    out.insert(out.columns.get_loc("DUAL_PAIR_ID") + 1, "DUAL_JENIS", jenis)
     return out
 
 
@@ -395,8 +442,11 @@ def beri_event_id(events: pd.DataFrame, df_asli: pd.DataFrame):
 def gabungkan_hasil(df: pd.DataFrame, events: pd.DataFrame, event_id_map: dict) -> pd.DataFrame:
     """Menggabungkan status komputasi kembali ke DataFrame awal per baris kontainer (vektorisasi cepat via merge)."""
     cols_to_merge = [
-        "GROUP_ID", "EVENT_ID", "CONTAINER_STATUS", "STATUS", "DUAL_PAIR_ID",
+        "GROUP_ID", "EVENT_ID", "CONTAINER_STATUS", "STATUS",
         "TWINLIFT_STATUS", "TWINLIFT_GAP_MENIT",
+        # Blok informasi pasangan Dual Cycle (kosong / "-" untuk Non Dual)
+        "DUAL_PAIR_ID", "DUAL_PASANGAN_EVENT_ID", "DUAL_URUTAN", "DUAL_GAP_LOKASI",
+        "DUAL_GAP_MENIT", "DUAL_AMBANG_MENIT", "DUAL_SELISIH_AMBANG_MENIT",
     ]
     out = df.merge(events[cols_to_merge], on="GROUP_ID", how="left")
     out = out.drop(columns=["GROUP_ID", "ROW_IDX"])
@@ -729,6 +779,7 @@ def proses_analisis_lengkap(
 
     events = layer2_dual(events, ambang_dual)
     events, event_id_map = beri_event_id(events, df_combo)
+    events = isi_pasangan_dual(events)
 
     if progress_callback:
         progress_callback(92, "Menyusun ringkasan metrik KPI...", "Agregasi produktivitas kapal")
