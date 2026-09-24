@@ -197,11 +197,16 @@ with st.container(border=True):
             min_value=1,
             value=AMBANG_DUAL_MENIT_DEFAULT,
             step=10,
-            help="Jarak waktu maksimum antar 2 event beda aktivitas (LOAD vs DISC) dalam truk yang sama.",
+            help=(
+                "Jarak waktu maksimum antar 2 event beda aktivitas (LOAD vs DISC) dalam truk yang sama. "
+                "Jika DISC dulu lalu LOAD, gap diukur di lapangan (selesai stack DISC sampai mulai "
+                "unstack LOAD). Jika LOAD dulu lalu DISC, gap diukur di dermaga (selesai muat LOAD "
+                "sampai mulai bongkar DISC)."
+            ),
         )
         render_html(
             '<div class="step2-param-hint" style="font-size:0.75rem;color:#94a3b8;margin-top:-8px;line-height:1.35;margin-bottom:2px;">'
-            'Maks. gap antar event DISC &amp; LOAD (truk sama)</div>'
+            'Maks. gap antar event DISC &amp; LOAD (truk sama): lapangan jika DISC dulu, dermaga jika LOAD dulu</div>'
         )
 
     with th3:
@@ -273,7 +278,7 @@ with st.container(border=True):
             or "monthly_20ft" not in _cached_summary
             or "aturan_twinlift_crane" not in _cached_summary
             or _cached_out_df is None
-            or "DUAL_JENIS" not in _cached_out_df.columns
+            or "DUAL_SELISIH_AMBANG_MENIT" not in _cached_out_df.columns
         ):
             st.session_state.pop("hasil", None)
             st.warning(
