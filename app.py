@@ -214,12 +214,13 @@ with st.container(border=True):
                 "Jarak waktu maksimum DISC_LOAD_TS antar 2 kontainer dalam 1 Combo 20ft "
                 "pada kegiatan di dermaga, baik bongkar (DISC) maupun muat (LOAD), "
                 "yang berasal dari kapal (VES_ID), truk, & Crane (QC) yang sama, "
-                "supaya dianggap 'Twinlift'."
+                "supaya dianggap 'Twinlift'. Hanya crane kade internasional (ID berakhiran 'I') "
+                "yang bisa Twinlift; crane kade domestik (berakhiran 'D') selalu bukan Twinlift."
             ),
         )
         render_html(
             '<div class="step2-param-hint" style="font-size:0.75rem;color:#94a3b8;margin-top:-8px;line-height:1.35;margin-bottom:2px;">'
-            'Maks. gap waktu angkat 2 kontainer Combo 20ft (DISC &amp; LOAD, crane sama)</div>'
+            'Maks. gap waktu angkat 2 kontainer Combo 20ft (DISC &amp; LOAD, crane kade internasional sama)</div>'
         )
 
     # Pemetaan Kolom Otomatis
@@ -270,6 +271,7 @@ with st.container(border=True):
         if (
             "total_bukan_twinlift_kontainer" not in _cached_summary
             or "monthly_20ft" not in _cached_summary
+            or "aturan_twinlift_crane" not in _cached_summary
             or _cached_out_df is None
             or "DUAL_JENIS" not in _cached_out_df.columns
         ):
@@ -771,7 +773,8 @@ with st.container(border=True):
             '<div style="font-size:0.8rem;color:#94a3b8;margin-top:-6px;margin-bottom:10px;line-height:1.4;">'
             'Syarat Twinlift: 2 kontainer 20ft dari kapal yang sama, diangkut truk yang sama, '
             'DAN diangkat oleh Crane yang sama pada kegiatan di dermaga (bongkar DISC maupun '
-            'muat LOAD), dalam ambang waktu yang ditentukan. Persentase '
+            'muat LOAD), dalam ambang waktu yang ditentukan. Twinlift hanya bisa dilakukan crane '
+            'kade internasional (ID berakhiran I); crane kade domestik (berakhiran D) selalu 0%. Persentase '
             'di bawah dihitung dari kontainer 20ft yang ditangani tiap crane, bukan dari seluruh '
             'kontainer yang ditangani crane tersebut.</div>'
         )
@@ -812,9 +815,9 @@ with st.container(border=True):
                         color="pct_twinlift_dari_20ft",
                         color_continuous_scale=["#94A3B8", "#0284C7"],
                     )
-                    fig_crane.update_traces(texttemplate="%{text}%", textposition="outside")
+                    fig_crane.update_traces(texttemplate="%{text}%", textposition="outside", cliponaxis=False)
                     fig_crane.update_layout(
-                        xaxis=dict(title="% Twinlift (dari 20ft)", tickformat=".0%"),
+                        xaxis=dict(title="% Twinlift (dari 20ft)", tickformat=".0%", range=[0, 1.12]),
                         yaxis=dict(title=""),
                         coloraxis_showscale=False,
                     )
