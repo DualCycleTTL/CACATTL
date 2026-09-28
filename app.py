@@ -6,6 +6,7 @@ Aplikasi analitis berbasis web untuk rekonstruksi siklus truk dermaga,
 evaluasi rasio Dual Cycle, utilisasi Twin Lift, serta agregasi produktivitas per kapal.
 """
 
+import datetime
 from pathlib import Path
 import time
 import numpy as np
@@ -23,7 +24,11 @@ from modules.calculations import (
     AMBANG_DUAL_MENIT_DEFAULT,
     AMBANG_TWINLIFT_MENIT_DEFAULT,
     SIZE_ELIGIBLE,
+    compute_period_bounds,
+    extract_period_options_from_events,
+    filter_dataset_by_period,
     guess,
+    hitung_ringkasan,
     proses_analisis_lengkap,
 )
 from modules.charts import apply_glass_theme
@@ -34,10 +39,12 @@ from modules.ui import (
     inject_css,
     inject_transition_script,
     render_artistic_hero,
+    render_dual_cycle_kpi_section,
     render_html,
     render_hybrid_loading_indicator,
     render_kpi_card,
     render_template,
+    show_activity_detail_dialog,
 )
 
 
@@ -88,8 +95,20 @@ inject_transition_script("transition.js")
 
 # Anchor point untuk smooth scroll dari hero banner
 render_html(
-    '<div id="langkah-analisis" style="scroll-margin-top: 24px; position:relative; top:-12px; height:0; margin:0; padding:0;"></div>'
+    '<div id="langkah-analisis" style="scroll-margin-top: 36px; display: block; width: 100%; height: 1px; visibility: hidden; margin: 0; padding: 0;"></div>'
 )
+
+# ----------------------------------------------------------------
+# Manajemen Sesi Persisten (Auto-Restore Hasil Analisis Terakhir)
+# Menjamin hasil analisis tidak hilang saat browser direfresh (F5)
+# ----------------------------------------------------------------
+@st.cache_resource
+def get_global_session_store() -> dict:
+    """Menyimpan data dan hasil komputasi terakhir di memori server agar tahan refresh browser."""
+    return {}
+
+session_store = get_global_session_store()
+has_stored_session = session_store.get("hasil") is not None
 
 # ================================================================
 # LANGKAH 1 (ATAS): Unggah File Data Operasional
@@ -109,10 +128,45 @@ with st.container(border=True):
             key="file_uploader_widget",
         )
         if uploaded is None:
-            render_html('<div class="step1-upload-hint">(Khusus format .xlsx &lt;200 MB)</div>')
+            if has_stored_session:
+                stored_fname = session_store.get("filename", "data_operasional.xlsx")
+                render_html(
+                    f'<div class="session-restored-pill">'
+                    f'<span class="session-restored-text">📂 <strong>Sesi Aktif:</strong> {stored_fname} &nbsp;•&nbsp; '
+                    f'<span style="color:#38bdf8;font-weight:600;">Analisis dipulihkan otomatis</span></span>'
+                    f'</div>'
+                )
+                if st.button("✕ Reset & Unggah File Baru", key="btn_reset_session", help="Klik untuk mereset dan mengunggah file baru"):
+                    session_store.clear()
+                    st.session_state.clear()
+                    st.rerun()
+            else:
+                render_html('<div class="step1-upload-hint">(Khusus format .xlsx &lt;200 MB)</div>')
 
-# Alur Kerja Bertahap: Jika belum ada file diunggah, Langkah 2 & 3 tidak muncul
-if uploaded is None:
+# Alur Penentuan Sumber Data: Dari file upload baru atau dari sesi tersimpan
+if uploaded is not None:
+    uploaded_name = uploaded.name
+    file_bytes = uploaded.getvalue()
+    file_sig = (uploaded.name, len(file_bytes), hash(file_bytes[:1_000_000]))
+    if st.session_state.get("_last_file_sig") != file_sig:
+        st.session_state.pop("hasil", None)
+        st.session_state.pop("_cached_sheets", None)
+        st.session_state["_last_file_sig"] = file_sig
+        session_store.clear()
+    session_store["filename"] = uploaded_name
+    session_store["file_bytes"] = file_bytes
+    session_store["file_sig"] = file_sig
+elif has_stored_session:
+    # Memulihkan data dari sesi aktif di memori server
+    uploaded_name = session_store["filename"]
+    file_bytes = session_store["file_bytes"]
+    file_sig = session_store["file_sig"]
+    sheets = session_store["sheets"]
+    st.session_state["_cached_sheets"] = sheets
+    st.session_state["hasil"] = session_store["hasil"]
+    st.session_state["_last_file_sig"] = file_sig
+else:
+    # Belum ada file atau sesi tersimpan: Berhenti di Langkah 1
     st.session_state.pop("hasil", None)
     st.session_state.pop("_last_file_sig", None)
     st.session_state.pop("_cached_sheets", None)
@@ -121,22 +175,13 @@ if uploaded is None:
 # ================================================================
 # LANGKAH 2 (TENGAH): Parameter Ambang Batas & Konfigurasi
 # ================================================================
-file_bytes = uploaded.getvalue()
-
-# Deteksi jika file yang diunggah berubah
-file_sig = (uploaded.name, len(file_bytes), hash(file_bytes[:1_000_000]))
-if st.session_state.get("_last_file_sig") != file_sig:
-    st.session_state.pop("hasil", None)
-    st.session_state.pop("_cached_sheets", None)
-    st.session_state["_last_file_sig"] = file_sig
-
 # Indikator hybrid loading saat file dibaca pertama kali atau file baru diupload
 loading_placeholder = st.empty()
 
 if "_cached_sheets" not in st.session_state:
     def on_read_progress(pct: int, status_text: str, detail_text: str = ""):
         render_hybrid_loading_indicator(
-            uploaded.name,
+            uploaded_name,
             len(file_bytes),
             pct=pct,
             status_text=status_text,
@@ -145,8 +190,9 @@ if "_cached_sheets" not in st.session_state:
         )
 
     try:
-        sheets = baca_file(file_bytes, uploaded.name, progress_callback=on_read_progress)
+        sheets = baca_file(file_bytes, uploaded_name, progress_callback=on_read_progress)
         st.session_state["_cached_sheets"] = sheets
+        session_store["sheets"] = sheets
         time.sleep(0.45)
         loading_placeholder.empty()
     except Exception as e:
@@ -160,6 +206,7 @@ if "_cached_sheets" not in st.session_state:
         st.stop()
 else:
     sheets = st.session_state["_cached_sheets"]
+    session_store["sheets"] = sheets
 
 if not sheets:
     st.error("File tidak berisi sheet/data apa pun.")
@@ -171,9 +218,82 @@ raw = None
 with st.container(border=True):
     render_template("step2_header.html")
 
-    # Pemilihan Sheet Data Operasional
     sheet_keys = list(sheets.keys())
-    sheet_name = st.selectbox("Pilih sheet data operasional:", sheet_keys, index=0)
+    default_sheet_idx = 0
+    if "step2_selected_sheet" in st.session_state and st.session_state["step2_selected_sheet"] in sheet_keys:
+        default_sheet_idx = sheet_keys.index(st.session_state["step2_selected_sheet"])
+    current_sheet_name = sheet_keys[default_sheet_idx]
+
+    # Reset rentang tanggal jika sheet berganti
+    if st.session_state.get("_last_selected_sheet") != current_sheet_name:
+        st.session_state["_last_selected_sheet"] = current_sheet_name
+        st.session_state.pop("step2_date_range_picker", None)
+        st.session_state.pop("_init_period_range", None)
+        st.session_state.pop("_init_period_label", None)
+
+    raw_sheet_candidate = sheets[current_sheet_name]
+
+    # Deteksi rentang tanggal dari sheet terpilih
+    cand_cols = list(raw_sheet_candidate.columns)
+    ts_g_cand_idx = guess(cand_cols, ["disc_load", "disc_loading", "waktu", "time", "date"])
+    ts_g_col_cand = cand_cols[ts_g_cand_idx]
+    raw_dummy_ts = pd.DataFrame({"START_TS": raw_sheet_candidate[ts_g_col_cand]})
+    _, _, _, step2_min_d, step2_max_d = extract_period_options_from_events(raw_dummy_ts)
+
+    # ----------------------------------------------------------------
+    # Filter Periode Data Operasional yang Mau Ditampilkan (Datepicker)
+    # Diletakkan di atas filter pilih sheet
+    # ----------------------------------------------------------------
+    if not step2_min_d or not step2_max_d:
+        st.info(f"📅 Menampilkan seluruh data ({len(raw_sheet_candidate):,} baris kontainer)")
+        st.session_state["_init_period_range"] = None
+        st.session_state["_init_period_label"] = "Semua Tanggal Data"
+    else:
+        default_range = (step2_min_d, step2_max_d)
+
+        step2_date_val = st.date_input(
+            "Filter Rentang Tanggal Operasional (Mulai - Selesai):",
+            value=default_range,
+            min_value=step2_min_d,
+            max_value=step2_max_d,
+            format="DD/MM/YYYY",
+            key="step2_date_range_picker",
+            help="Klik input untuk membuka kalender. Pilih tanggal mulai dan tanggal selesai bebas tanpa batasan. Hanya tanggal di dalam file Excel yang dapat dipilih.",
+        )
+
+        if isinstance(step2_date_val, (tuple, list)):
+            if len(step2_date_val) == 2:
+                r_start, r_end = step2_date_val
+                if r_start > r_end:
+                    r_start, r_end = r_end, r_start
+                is_full_range = (r_start == step2_min_d and r_end == step2_max_d)
+                if is_full_range:
+                    lbl = f"Seluruh Data Excel ({step2_min_d.strftime('%d/%m/%Y')} s.d. {step2_max_d.strftime('%d/%m/%Y')})"
+                    rng = None
+                else:
+                    n_days = (r_end - r_start).days + 1
+                    lbl = f"{r_start.strftime('%d/%m/%Y')} s.d. {r_end.strftime('%d/%m/%Y')} ({n_days} Hari)"
+                    rng = (r_start, r_end)
+
+                st.session_state["_init_period_range"] = rng
+                st.session_state["_init_period_label"] = lbl
+            elif len(step2_date_val) == 1:
+                # Pemilihan sedang berlangsung (baru memilih 1 tanggal)
+                r_single = step2_date_val[0]
+                st.session_state["_init_period_range"] = (r_single, r_single)
+                st.session_state["_init_period_label"] = f"{r_single.strftime('%d/%m/%Y')} (1 Hari)"
+        else:
+            r_single = step2_date_val
+            st.session_state["_init_period_range"] = (r_single, r_single)
+            st.session_state["_init_period_label"] = f"{r_single.strftime('%d/%m/%Y')} (1 Hari)"
+
+    # Pemilihan Sheet Data Operasional (di bawah filter rentang tanggal)
+    sheet_name = st.selectbox(
+        "Pilih sheet data operasional:",
+        sheet_keys,
+        index=default_sheet_idx,
+        key="step2_selected_sheet",
+    )
     raw = sheets[sheet_name]
 
     # Baris 2: 3 Kolom Parameter Ambang Batas Berjejer Horizontal
@@ -243,26 +363,9 @@ with st.container(border=True):
     crane_keywords = ["crane", "qc_id", "qc", "gantry", "quay", "che_id", "che"]
     if crane_kandidat:
         nama_tebakan_crane = crane_kandidat[guess(crane_kandidat, crane_keywords)]
-        crane_guess_idx = cols.index(nama_tebakan_crane)
+        col_map["crane"] = nama_tebakan_crane
     else:
-        crane_guess_idx = 0
-
-    with st.expander("⚙️ Pengaturan Lanjutan: Kolom Crane (untuk performa Twinlift per Crane)", expanded=False):
-        crane_col_pilihan = st.selectbox(
-            "Pilih kolom yang berisi ID/Nomor Crane (QC):",
-            cols,
-            index=crane_guess_idx,
-            help=(
-                "Kolom ini dipakai sebagai syarat tambahan 'sama crane' saat mendeteksi "
-                "Twinlift (selain sama kapal & sama truk), serta untuk menampilkan performa "
-                "Twinlift per Crane. Jika data tidak punya kolom crane, biarkan default."
-            ),
-        )
-        render_html(
-            '<div style="font-size:0.75rem;color:#94a3b8;margin-top:-8px;line-height:1.35;">'
-            'Pastikan kolom ini benar-benar berisi ID Crane/QC, bukan kolom lain.</div>'
-        )
-    col_map["crane"] = crane_col_pilihan
+        col_map["crane"] = None
 
     # Peringatan jika hasil analisis sebelumnya sudah usang
     if "hasil" in st.session_state:
@@ -297,7 +400,7 @@ if run:
 
     def on_calc_progress(pct: int, status_text: str, detail_text: str = ""):
         render_hybrid_loading_indicator(
-            uploaded.name,
+            uploaded_name,
             len(file_bytes),
             pct=pct,
             status_text=status_text,
@@ -307,8 +410,30 @@ if run:
 
     try:
         on_calc_progress(6, "Memulai analisis...", "Inisialisasi pipeline komputasi")
+
+        # Filter dataset mentah sebelum komputasi jika pengguna memilih rentang tanggal tertentu di Step 2
+        raw_to_process = raw
+        init_range = st.session_state.get("_init_period_range")
+        if init_range is not None:
+            r_start, r_end = init_range
+            ts_col = col_map["ts_g"]
+            ts_series = pd.to_datetime(raw_to_process[ts_col], errors="coerce")
+            start_dt = pd.to_datetime(r_start)
+            end_dt = pd.to_datetime(r_end) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+            date_mask = (ts_series >= start_dt) & (ts_series <= end_dt)
+            raw_to_process = raw_to_process[date_mask].copy()
+
+            if len(raw_to_process) == 0:
+                loading_calc_placeholder.empty()
+                st.error(
+                    f"Tidak ada data kontainer pada rentang tanggal "
+                    f"{st.session_state.get('_init_period_label', '')}. "
+                    f"Silakan sesuaikan kembali pemilihan rentang tanggal di Langkah 2."
+                )
+                st.stop()
+
         out_df, events, summary = proses_analisis_lengkap(
-            raw,
+            raw_to_process,
             col_map,
             SIZE_ELIGIBLE,
             ambang_combo,
@@ -340,29 +465,34 @@ if run:
         "ambang_combo": ambang_combo,
         "ambang_dual": ambang_dual,
         "ambang_twinlift": ambang_twinlift,
+        "period_label": st.session_state.get("_init_period_label", "Seluruh Data Excel"),
+        "period_range": st.session_state.get("_init_period_range"),
     }
-    st.session_state["_ambang_terakhir"] = (ambang_combo, ambang_dual, ambang_twinlift)
+    st.session_state["_ambang_terakhir"] = (
+        ambang_combo,
+        ambang_dual,
+        ambang_twinlift,
+        st.session_state.get("_init_period_range"),
+    )
+
+    # Simpan hasil komputasi ke session_store server agar persisten terhadap refresh browser (F5)
+    session_store["hasil"] = st.session_state["hasil"]
+    session_store["sheets"] = sheets
+    session_store["filename"] = uploaded_name
+    session_store["file_bytes"] = file_bytes
+    session_store["file_sig"] = file_sig
 
 hasil = st.session_state["hasil"]
 out_df = hasil["out_df"]
 events = hasil["events"]
 summary = hasil["summary"]
 
-_ambang_terakhir = st.session_state.get(
-    "_ambang_terakhir", (hasil["ambang_combo"], hasil["ambang_dual"], hasil["ambang_twinlift"])
-)
-if (ambang_combo, ambang_dual, ambang_twinlift) != _ambang_terakhir:
-    st.warning(
-        "Ambang batas di Pengaturan sudah diubah tapi belum diterapkan. "
-        "Hasil di bawah masih menggunakan ambang yang lama — klik "
-        "\"Jalankan Komputasi Analisis\" lagi untuk memperbarui."
-    )
-
 # ================================================================
 # LANGKAH 3: EXECUTIVE KPI & HASIL ANALISIS
 # ================================================================
 with st.container(border=True):
-    render_template("step3_header.html")
+    period_lbl = hasil.get("period_label", st.session_state.get("_init_period_label", "Seluruh Data Excel"))
+    render_template("step3_header.html", period_label=period_lbl)
 
     # Smooth scroll otomatis menggeser halaman ke Langkah 3 saat komputasi selesai dijalankan
     if run:
@@ -407,28 +537,8 @@ with st.container(border=True):
     # TAB 1: DUAL CYCLE
     # ----------------------------------------------------------------
     with tab_dual:
-        # Baris 1: total petikemas (basis kontainer) & total ritase (basis event truk)
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            render_kpi_card(
-                "Total Petikemas", format_number(summary["container_total"]), subtext="Semua Kontainer", variant="purple"
-            )
-        with k2:
-            render_kpi_card("Total Ritase", format_number(summary["total_event"]), subtext="Ritase Truk", variant="purple")
-        with k3:
-            render_kpi_card("Container LOAD", format_number(summary["container_load"]), subtext="Total Muat", variant="amber")
-        with k4:
-            render_kpi_card("Container DISC", format_number(summary["container_disc"]), subtext="Total Bongkar", variant="teal")
-
-        # Baris 2: hasil deteksi Dual Cycle (basis ritase)
-        k5, k6, k7 = st.columns(3)
-        with k5:
-            render_kpi_card("Dual Cycle", format_number(summary["total_dual"]), variant="blue")
-        with k6:
-            render_kpi_card("Non Dual", format_number(summary["total_single"]), variant="slate")
-        with k7:
-            pct_dual_val = summary["pct_dual"] * 100
-            render_kpi_card("% Dual Cycle", f"{pct_dual_val:.1f}%", variant="blue")
+        # Mini Card KPI Interaktif (Default 5 kartu, klik Total Petikemas untuk menampilkan Container LOAD & DISC)
+        render_dual_cycle_kpi_section(summary)
 
         cc1, cc2 = st.columns(2)
         with cc1:
@@ -444,6 +554,7 @@ with st.container(border=True):
                 title="Dual Cycle vs Non Dual (berbasis Event)",
                 color="Status",
                 color_discrete_map={"Dual Cycle": "#0284C7", "Non Dual": "#94A3B8"},
+                custom_data=["Status"],
             )
             fig_pie.update_traces(
                 textinfo="percent+label",
@@ -451,10 +562,37 @@ with st.container(border=True):
                 insidetextorientation="horizontal",
                 textfont=dict(family="Plus Jakarta Sans", size=12, color="#ffffff"),
                 marker=dict(line=dict(color="#ffffff", width=2)),
+                hovertemplate="<b>%{label}</b><br>Jumlah: %{value:,} event (%{percent})<extra></extra>",
             )
             apply_glass_theme(fig_pie)
             fig_pie.update_layout(margin=dict(t=72, b=25, l=25, r=25))
-            st.plotly_chart(fig_pie, width="stretch")
+
+            # Render chart donut
+            st.plotly_chart(
+                fig_pie,
+                use_container_width=True,
+                key="donut_dual_cycle_chart",
+            )
+
+            # Tombol aksi langsung untuk membuka rincian modal
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                if st.button("🔍 Rincian Dual Cycle", use_container_width=True, key="btn_quick_dual_detail"):
+                    st.session_state["modal_activity_status"] = "Dual Cycle"
+                    st.session_state["show_activity_modal"] = True
+                    st.rerun()
+
+            with col_b2:
+                if st.button("🔍 Rincian Non Dual", use_container_width=True, key="btn_quick_non_dual_detail"):
+                    st.session_state["modal_activity_status"] = "Non Dual"
+                    st.session_state["show_activity_modal"] = True
+                    st.rerun()
+
+            # Tampilkan Pop-up Dialog Modal jika dipicu
+            if st.session_state.get("show_activity_modal") and st.session_state.get("modal_activity_status"):
+                status_to_open = st.session_state["modal_activity_status"]
+                st.session_state["show_activity_modal"] = False
+                show_activity_detail_dialog(status_to_open, events, out_df, summary)
 
         with cc2:
             # FIX LOGIKA: Combo cuma mungkin terjadi pada kontainer 20ft, jadi
@@ -680,7 +818,11 @@ with st.container(border=True):
         t1, t2, t3, t4, t5 = st.columns(5)
         with t1:
             render_kpi_card(
-                "Total Kontainer", format_number(summary["container_total"]), subtext="Semua Ukuran", variant="purple"
+                "Total Kontainer",
+                format_number(summary["container_total"]),
+                subtext="Semua Ukuran",
+                variant="purple",
+                tooltip="Total seluruh kontainer dari semua ukuran (20ft, 40ft, 45ft) yang dianalisis dalam data operasional.",
             )
         with t2:
             render_kpi_card(
@@ -688,10 +830,15 @@ with st.container(border=True):
                 format_number(total_kontainer_20ft),
                 subtext=f"{summary['pct_20ft_of_total'] * 100:.1f}% dari Total Kontainer",
                 variant="amber",
+                tooltip="Jumlah kontainer berukuran 20 kaki (20ft), satu-satunya ukuran yang dapat dioperasikan secara twinlift.",
             )
         with t3:
             render_kpi_card(
-                "Twinlift", format_number(total_twinlift_kontainer), subtext="dari Kontainer 20ft", variant="blue"
+                "Twinlift",
+                format_number(total_twinlift_kontainer),
+                subtext="dari Kontainer 20ft",
+                variant="blue",
+                tooltip="Jumlah kontainer 20ft yang diangkat atau diangkut bersamaan secara berpasangan dalam ambang batas toleransi waktu.",
             )
         with t4:
             render_kpi_card(
@@ -699,9 +846,17 @@ with st.container(border=True):
                 format_number(total_bukan_twinlift_kontainer),
                 subtext="dari Kontainer 20ft",
                 variant="slate",
+                tooltip="Jumlah kontainer 20ft yang diangkat atau diangkut secara tunggal (single lift).",
             )
         with t5:
-            render_kpi_card("% Twinlift", f"{pct_twinlift_20ft_val:.1f}%", subtext="Basis Kontainer 20ft", variant="blue")
+            render_kpi_card(
+                "% Twinlift",
+                f"{pct_twinlift_20ft_val:.1f}%",
+                subtext="Basis Kontainer 20ft",
+                variant="blue",
+                tooltip="Persentase kontainer 20ft yang beroperasi secara twinlift terhadap total kontainer 20ft (Twinlift ÷ Total 20ft × 100%).",
+                align_tooltip_right=True,
+            )
 
         tc1, tc2 = st.columns(2)
         with tc1:

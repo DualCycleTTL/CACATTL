@@ -25,6 +25,7 @@ sekarang dihitung dengan basis populasi kontainer 20ft saja
 kolom pct_twinlift_dari_20ft di hitung_performa_crane).
 """
 
+import datetime
 import re
 import numpy as np
 import pandas as pd
@@ -498,6 +499,182 @@ def hitung_breakdown_waktu(events: pd.DataFrame) -> dict:
     day_shift = day_shift.sort_values(["TANGGAL", "SHIFT"]).reset_index(drop=True)
 
     return {"daily": daily, "shift": shift, "day_shift": day_shift}
+
+
+def extract_period_options_from_events(events: pd.DataFrame):
+    """
+    Mengekstrak daftar opsi periode (hari, minggu, bulan) dari DataFrame events/raw.
+    Mengembalikan (days_dict, weeks_dict, months_dict, min_date, max_date).
+    """
+    if events is None or len(events) == 0 or "START_TS" not in events.columns:
+        return {}, {}, {}, None, None
+
+    ts_series = pd.to_datetime(events["START_TS"], errors="coerce").dropna()
+    if len(ts_series) == 0:
+        return {}, {}, {}, None, None
+
+    days = sorted(ts_series.dt.date.unique())
+    days = [d for d in days if d.year >= 2000]
+    if not days:
+        return {}, {}, {}, None, None
+
+    nama_hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+    nama_bulan_lengkap = [
+        "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    ]
+
+    # 1. Opsi Harian
+    days_dict = {}
+    for d in days:
+        label = f"{d.strftime('%d/%m/%Y')} ({nama_hari[d.weekday()]})"
+        days_dict[label] = (d, d)
+
+    # 2. Opsi Mingguan (Senin s.d. Minggu)
+    df_temp = pd.DataFrame({"dt": [pd.Timestamp(d) for d in days]})
+    df_temp["week_start"] = df_temp["dt"].apply(lambda x: (x - pd.Timedelta(days=x.weekday())).date())
+    df_temp["week_end"] = df_temp["week_start"].apply(lambda x: x + pd.Timedelta(days=6))
+    unique_weeks = df_temp[["week_start", "week_end"]].drop_duplicates().sort_values("week_start")
+
+    weeks_dict = {}
+    for idx, (_, row) in enumerate(unique_weeks.iterrows(), 1):
+        ws = row["week_start"]
+        we = row["week_end"]
+        ws_disp = max(ws, days[0])
+        we_disp = min(we, days[-1])
+        label = f"Minggu {idx:02d}: {ws_disp.strftime('%d %b %Y')} s.d. {we_disp.strftime('%d %b %Y')}"
+        weeks_dict[label] = (ws, we)
+
+    # 3. Opsi Bulanan
+    months_dict = {}
+    df_temp["ym"] = df_temp["dt"].dt.to_period("M")
+    for ym in sorted(df_temp["ym"].unique()):
+        y = ym.year
+        m = ym.month
+        label = f"{nama_bulan_lengkap[m]} {y}"
+        start_m = pd.Timestamp(year=y, month=m, day=1).date()
+        end_m = (pd.Timestamp(year=y, month=m, day=1) + pd.offsets.MonthEnd(1)).date()
+        months_dict[label] = (start_m, end_m)
+
+    return days_dict, weeks_dict, months_dict, days[0], days[-1]
+
+
+def compute_period_bounds(selected_val, mode: str, min_d, max_d):
+    """
+    Menghitung rentang tanggal (start_date, end_date) dan label teks representatif
+    berdasarkan mode periodik ('Semua Periode (Penuh)', 'Per Hari (Harian)',
+    'Per Minggu (Mingguan)', 'Per Bulan (Bulanan)', 'Rentang Tanggal Bebas').
+    
+    Menjamin start_date dan end_date selalu berada dalam rentang aman [min_d, max_d].
+    """
+    if min_d is None or max_d is None:
+        return None, "Semua Periode (Penuh)"
+
+    if hasattr(min_d, "date"):
+        min_d = min_d.date()
+    if hasattr(max_d, "date"):
+        max_d = max_d.date()
+
+    nama_hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+    nama_bulan_lengkap = [
+        "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    ]
+
+    if mode == "Semua Periode (Penuh)" or selected_val is None:
+        return None, "Semua Periode (Penuh)"
+
+    if mode == "Per Hari (Harian)":
+        d = selected_val
+        if hasattr(d, "date"):
+            d = d.date()
+        if not isinstance(d, datetime.date):
+            d = min_d
+        d = max(min(d, max_d), min_d)
+        label = f"{nama_hari[d.weekday()]}, {d.strftime('%d/%m/%Y')}"
+        return (d, d), label
+
+    if mode == "Per Minggu (Mingguan)":
+        d = selected_val
+        if hasattr(d, "date"):
+            d = d.date()
+        if not isinstance(d, datetime.date):
+            d = min_d
+        d = max(min(d, max_d), min_d)
+        w_start = d - datetime.timedelta(days=d.weekday())
+        w_end = w_start + datetime.timedelta(days=6)
+        ws_clip = max(w_start, min_d)
+        we_clip = min(w_end, max_d)
+        label = f"Minggu: {ws_clip.strftime('%d/%m/%Y')} s.d. {we_clip.strftime('%d/%m/%Y')}"
+        return (ws_clip, we_clip), label
+
+    if mode == "Per Bulan (Bulanan)":
+        d = selected_val
+        if hasattr(d, "date"):
+            d = d.date()
+        if not isinstance(d, datetime.date):
+            d = min_d
+        d = max(min(d, max_d), min_d)
+        m_start = d.replace(day=1)
+        m_end = (pd.Timestamp(m_start) + pd.offsets.MonthEnd(1)).date()
+        ms_clip = max(m_start, min_d)
+        me_clip = min(m_end, max_d)
+        label = f"Bulan {nama_bulan_lengkap[d.month]} {d.year} ({ms_clip.strftime('%d/%m/%Y')} s.d. {me_clip.strftime('%d/%m/%Y')})"
+        return (ms_clip, me_clip), label
+
+    if mode == "Rentang Tanggal Bebas":
+        if isinstance(selected_val, (tuple, list)):
+            if len(selected_val) == 2:
+                s, e = selected_val
+            elif len(selected_val) == 1:
+                s, e = selected_val[0], selected_val[0]
+            else:
+                s, e = min_d, max_d
+        elif hasattr(selected_val, "date"):
+            s, e = selected_val.date(), selected_val.date()
+        elif isinstance(selected_val, datetime.date):
+            s, e = selected_val, selected_val
+        else:
+            s, e = min_d, max_d
+
+        if hasattr(s, "date"):
+            s = s.date()
+        if hasattr(e, "date"):
+            e = e.date()
+        if not isinstance(s, datetime.date):
+            s = min_d
+        if not isinstance(e, datetime.date):
+            e = max_d
+
+        s = max(min(s, max_d), min_d)
+        e = max(min(e, max_d), min_d)
+        if s > e:
+            s, e = e, s
+        label = f"Rentang Tanggal: {s.strftime('%d/%m/%Y')} s.d. {e.strftime('%d/%m/%Y')}"
+        return (s, e), label
+
+    return None, "Semua Periode (Penuh)"
+
+
+def filter_dataset_by_period(events: pd.DataFrame, out_df: pd.DataFrame, start_date, end_date):
+    """
+    Memfilter events dan out_df berdasarkan rentang tanggal [start_date, end_date].
+    """
+    if start_date is None or end_date is None or events is None or out_df is None:
+        return events, out_df
+
+    events_dt = pd.to_datetime(events["START_TS"]).dt.date
+    mask_events = (events_dt >= start_date) & (events_dt <= end_date)
+    filtered_events = events[mask_events].reset_index(drop=True)
+
+    if "EVENT_ID" in out_df.columns:
+        filtered_out_df = out_df[out_df["EVENT_ID"].isin(filtered_events["EVENT_ID"])].reset_index(drop=True)
+    else:
+        out_dt = pd.to_datetime(out_df["START_TS"]).dt.date
+        mask_out = (out_dt >= start_date) & (out_dt <= end_date)
+        filtered_out_df = out_df[mask_out].reset_index(drop=True)
+
+    return filtered_events, filtered_out_df
 
 
 def hitung_ringkasan(events: pd.DataFrame, out_df: pd.DataFrame, size_eligible: int = SIZE_ELIGIBLE) -> dict:

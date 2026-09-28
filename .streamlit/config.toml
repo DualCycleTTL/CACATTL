@@ -8,3 +8,10 @@ font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
+
+[server]
+enableXsrfProtection = false
+enableCORS = false
+maxUploadSize = 500
+runOnSave = true
+

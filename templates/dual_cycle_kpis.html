@@ -1,0 +1,181 @@
+<div class="kpi-interactive-section">
+    <!-- Checkbox Hack: Murni CSS client-side tanpa memicu rerun Streamlit -->
+    <input type="checkbox" id="kpi-petikemas-toggle" class="kpi-toggle-input" />
+
+    <!-- Baris 1: Total Petikemas, Total Ritase, dan Rincian LOAD & DISC -->
+    <div class="kpi-grid-row kpi-grid-top">
+        <!-- 1. Total Petikemas (Clickable Label Trigger) -->
+        <label for="kpi-petikemas-toggle" class="kpi-card variant-purple kpi-card-clickable kpi-card-label-trigger"
+            title="Klik untuk menampilkan atau menyembunyikan rincian LOAD & DISC">
+            <div class="kpi-header">
+                <span class="kpi-label">TOTAL PETIKEMAS</span>
+                <div class="kpi-header-actions">
+                    <div class="kpi-toggle-pill">
+                        <span class="pill-text-collapsed">Lihat Rincian ▾</span>
+                        <span class="pill-text-expanded">Tutup ▴</span>
+                    </div>
+                    <div class="kpi-tooltip-container">
+                        <span class="kpi-tooltip-trigger" onclick="event.stopPropagation(); event.preventDefault();"
+                            aria-label="Penjelasan Total Petikemas">
+                            <span class="kpi-help-icon">?</span>
+                        </span>
+                        <div class="kpi-tooltip-bubble" role="tooltip">
+                            <div class="kpi-tooltip-header">
+                                <span class="kpi-tooltip-title">TOTAL PETIKEMAS</span>
+                            </div>
+                            <div class="kpi-tooltip-text">Total keseluruhan volume petikemas (20ft, 40ft, 45ft) baik
+                                bongkar (DISC) maupun muat (LOAD). Klik kartu ini untuk melihat atau menyembunyikan
+                                rincian Container LOAD & DISC.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="kpi-value">{{ container_total }}</div>
+            <div class="kpi-subtext">Semua Kontainer</div>
+        </label>
+
+        <!-- Wrapper Rincian (Container LOAD & DISC) dengan Animasi Buka & Tutup -->
+        <div class="kpi-breakdown-wrapper">
+            <div class="kpi-breakdown-inner">
+                <!-- 2. Container LOAD (Muncul saat Total Petikemas diklik) -->
+                <div class="kpi-card variant-amber kpi-breakdown-card">
+                    <div class="kpi-header">
+                        <span class="kpi-label">CONTAINER LOAD</span>
+                        <div class="kpi-header-actions">
+                            <div class="kpi-tooltip-container">
+                                <span class="kpi-tooltip-trigger" aria-label="Penjelasan Container LOAD">
+                                    <span class="kpi-help-icon">?</span>
+                                </span>
+                                <div class="kpi-tooltip-bubble" role="tooltip">
+                                    <div class="kpi-tooltip-header">
+                                        <span class="kpi-tooltip-title">CONTAINER LOAD</span>
+                                    </div>
+                                    <div class="kpi-tooltip-text">Jumlah petikemas dengan status muat (LOAD) dari lapangan
+                                        penumpukan menuju dermaga untuk dimuat ke atas kapal.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="kpi-value">{{ container_load }}</div>
+                    <div class="kpi-subtext">Total Muat</div>
+                </div>
+
+                <!-- 3. Container DISC (Muncul saat Total Petikemas diklik) -->
+                <div class="kpi-card variant-teal kpi-breakdown-card">
+                    <div class="kpi-header">
+                        <span class="kpi-label">CONTAINER DISC</span>
+                        <div class="kpi-header-actions">
+                            <div class="kpi-tooltip-container">
+                                <span class="kpi-tooltip-trigger" aria-label="Penjelasan Container DISC">
+                                    <span class="kpi-help-icon">?</span>
+                                </span>
+                                <div class="kpi-tooltip-bubble" role="tooltip">
+                                    <div class="kpi-tooltip-header">
+                                        <span class="kpi-tooltip-title">CONTAINER DISC</span>
+                                    </div>
+                                    <div class="kpi-tooltip-text">Jumlah petikemas dengan status bongkar (DISC) dari atas kapal
+                                        menuju ke dermaga dan lapangan penumpukan.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="kpi-value">{{ container_disc }}</div>
+                    <div class="kpi-subtext">Total Bongkar</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. Total Ritase -->
+        <div class="kpi-card variant-purple kpi-ritase-card">
+            <div class="kpi-header">
+                <span class="kpi-label">TOTAL RITASE</span>
+                <div class="kpi-header-actions">
+                    <div class="kpi-tooltip-container">
+                        <span class="kpi-tooltip-trigger" aria-label="Penjelasan Total Ritase">
+                            <span class="kpi-help-icon">?</span>
+                        </span>
+                        <div class="kpi-tooltip-bubble" role="tooltip">
+                            <div class="kpi-tooltip-header">
+                                <span class="kpi-tooltip-title">TOTAL RITASE</span>
+                            </div>
+                            <div class="kpi-tooltip-text">Jumlah keseluruhan pergerakan ritase truk (head truck/CHE)
+                                yang melayani pengangkutan petikemas antar dermaga dan lapangan penumpukan.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="kpi-value">{{ total_event }}</div>
+            <div class="kpi-subtext">Ritase Truk</div>
+        </div>
+    </div>
+
+    <!-- Baris 2: Hasil Deteksi Dual Cycle -->
+    <div class="kpi-grid-row kpi-grid-bottom">
+        <!-- 5. Dual Cycle -->
+        <div class="kpi-card variant-blue">
+            <div class="kpi-header">
+                <span class="kpi-label">DUAL CYCLE</span>
+                <div class="kpi-header-actions">
+                    <div class="kpi-tooltip-container">
+                        <span class="kpi-tooltip-trigger" aria-label="Penjelasan Dual Cycle">
+                            <span class="kpi-help-icon">?</span>
+                        </span>
+                        <div class="kpi-tooltip-bubble" role="tooltip">
+                            <div class="kpi-tooltip-header">
+                                <span class="kpi-tooltip-title">DUAL CYCLE</span>
+                            </div>
+                            <div class="kpi-tooltip-text">Jumlah ritase truk yang mengangkut kontainer bongkar (DISC)
+                                sekaligus muat (LOAD) dalam satu siklus perjalanan bolak-balik.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="kpi-value">{{ total_dual }}</div>
+        </div>
+
+        <!-- 6. Non Dual -->
+        <div class="kpi-card variant-slate">
+            <div class="kpi-header">
+                <span class="kpi-label">NON DUAL</span>
+                <div class="kpi-header-actions">
+                    <div class="kpi-tooltip-container">
+                        <span class="kpi-tooltip-trigger" aria-label="Penjelasan Non Dual">
+                            <span class="kpi-help-icon">?</span>
+                        </span>
+                        <div class="kpi-tooltip-bubble" role="tooltip">
+                            <div class="kpi-tooltip-header">
+                                <span class="kpi-tooltip-title">NON DUAL</span>
+                            </div>
+                            <div class="kpi-tooltip-text">Jumlah ritase truk satu arah (single cycle) yang hanya membawa
+                                muatan bongkar saja atau muat saja (perjalanan baliknya kosong).</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="kpi-value">{{ total_single }}</div>
+        </div>
+
+        <!-- 7. % Dual Cycle -->
+        <div class="kpi-card variant-blue">
+            <div class="kpi-header">
+                <span class="kpi-label">% DUAL CYCLE</span>
+                <div class="kpi-header-actions">
+                    <div class="kpi-tooltip-container">
+                        <span class="kpi-tooltip-trigger" aria-label="Penjelasan % Dual Cycle">
+                            <span class="kpi-help-icon">?</span>
+                        </span>
+                        <div class="kpi-tooltip-bubble" role="tooltip">
+                            <div class="kpi-tooltip-header">
+                                <span class="kpi-tooltip-title">% DUAL CYCLE</span>
+                            </div>
+                            <div class="kpi-tooltip-text">Persentase ritase Dual Cycle terhadap total ritase truk
+                                operasional (Dual Cycle ÷ Total Ritase × 100%). Menunjukkan efisiensi utilisasi armada.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="kpi-value">{{ pct_dual_formatted }}</div>
+        </div>
+    </div>
+</div>

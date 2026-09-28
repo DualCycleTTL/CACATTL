@@ -1,7 +1,10 @@
-<div class="kpi-card variant-{{ variant }}">
+<div class="kpi-card variant-{{ variant }} {{ extra_class }}">
     <div class="kpi-header">
         <span class="kpi-label">{{ label }}</span>
-        {{ badge_html }}
+        <div class="kpi-header-actions">
+            {{ badge_html }}
+            {{ tooltip_html }}
+        </div>
     </div>
     <div class="kpi-value">{{ value }}</div>
     {{ subtext_html }}
