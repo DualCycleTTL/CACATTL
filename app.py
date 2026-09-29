@@ -15,6 +15,17 @@ import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 
+# ----------------------------------------------------------------
+# Konfigurasi Halaman Streamlit
+# ----------------------------------------------------------------
+st.set_page_config(
+    page_title="CACA - Dashboard Analisis Dual Cycle & Twin Lift | Pelindo TTL",
+    page_icon="🚢",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+
 import gc
 import modules.charts
 import modules.ui
@@ -30,6 +41,7 @@ from modules.calculations import (
     guess,
     hitung_ringkasan,
     proses_analisis_lengkap,
+    ringkasan_per_vessel,
 )
 from modules.charts import apply_glass_theme
 from modules.data_loader import baca_file, build_excel_data_only
@@ -48,16 +60,6 @@ from modules.ui import (
 )
 
 
-
-# ----------------------------------------------------------------
-# Konfigurasi Halaman Streamlit
-# ----------------------------------------------------------------
-st.set_page_config(
-    page_title="CACA - Dashboard Analisis Dual Cycle & Twin Lift | Pelindo TTL",
-    page_icon="🚢",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
 
 # ----------------------------------------------------------------
 # Path Aset Media & Branding
@@ -377,6 +379,7 @@ with st.container(border=True):
             or "aturan_twinlift_crane" not in _cached_summary
             or _cached_out_df is None
             or "DUAL_JENIS" not in _cached_out_df.columns
+            or "DUAL_KAPAL_LAIN" not in _cached_out_df.columns
         ):
             st.session_state.pop("hasil", None)
             st.warning(
@@ -1030,7 +1033,52 @@ with st.container(border=True):
         if len(vessel_options) == 0:
             st.info("Tidak ada data VES_ID pada hasil analisis ini.")
         else:
-            selected_vessel = st.selectbox("Cari / pilih VES_ID", vessel_options)
+            # ---- Ringkasan jumlah kapal (seluruh data) ----
+            vessel_summary = ringkasan_per_vessel(out_df)
+            n_kapal_total = len(vessel_summary)
+            n_kapal_dual = int((vessel_summary["dual"] > 0).sum())
+            n_kapal_murni_saja = int(((vessel_summary["murni"] > 0) & (vessel_summary["campuran"] == 0)).sum())
+            n_kapal_ada_campuran = int((vessel_summary["campuran"] > 0).sum())
+
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                render_kpi_card("Jumlah Kapal", format_number(n_kapal_total), subtext="VES_ID unik", variant="purple")
+            with k2:
+                render_kpi_card("Kapal ber-Dual Cycle", format_number(n_kapal_dual), subtext="minimal 1 dual cycle", variant="blue")
+            with k3:
+                render_kpi_card("Kapal Dual Murni Saja", format_number(n_kapal_murni_saja), subtext="tanpa campuran", variant="emerald")
+            with k4:
+                render_kpi_card("Kapal Ada Campuran", format_number(n_kapal_ada_campuran), subtext="dual dengan kapal lain", variant="amber")
+
+            with st.expander(f"Tabel ringkasan semua kapal ({format_number(n_kapal_total)} kapal)", expanded=False):
+                tabel_v = vessel_summary.rename(
+                    columns={
+                        "VES_ID": "Kapal (VES_ID)",
+                        "total_kontainer": "Total Kontainer",
+                        "dual": "Dual Cycle",
+                        "murni": "Dual Murni",
+                        "campuran": "Dual Campuran",
+                        "jumlah_kapal_mitra": "Jumlah Kapal Mitra",
+                        "twinlift": "Twinlift",
+                        "combo": "Combo",
+                    }
+                ).copy()
+                tabel_v["% Dual Cycle"] = (tabel_v["pct_dual"] * 100).round(1)
+                st.dataframe(
+                    tabel_v[
+                        [
+                            "Kapal (VES_ID)", "Total Kontainer", "Dual Cycle", "Dual Murni",
+                            "Dual Campuran", "Jumlah Kapal Mitra", "Twinlift", "Combo", "% Dual Cycle",
+                        ]
+                    ].sort_values("Total Kontainer", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=320,
+                )
+
+            selected_vessel = st.selectbox(
+                f"Cari / pilih VES_ID ({format_number(n_kapal_total)} kapal)", vessel_options
+            )
             vessel_df = out_df[out_df["VES_ID"].astype(str).str.strip() == selected_vessel]
 
             total_rec = len(vessel_df)
@@ -1070,7 +1118,7 @@ with st.container(border=True):
                 render_kpi_card(
                     "Dual Cycle Murni",
                     format_number(dual_murni_rec),
-                    subtext=f"{pct_murni_v:.1f}% dari Dual Cycle • kapal ini saja",
+                    subtext=f"{pct_murni_v:.1f}% dari Dual Cycle • semua dari kapal ini",
                     variant="emerald",
                 )
             with w4:
@@ -1078,9 +1126,21 @@ with st.container(border=True):
                 render_kpi_card(
                     "Dual Cycle Campuran",
                     format_number(dual_campuran_rec),
-                    subtext=f"{pct_campuran_v:.1f}% dari Dual Cycle • dengan kapal lain",
+                    subtext=f"{pct_campuran_v:.1f}% dari Dual Cycle • ada kapal lain di pasangan",
                     variant="amber",
                 )
+
+            # Kapal mitra pada Dual Cycle Campuran kapal terpilih
+            if dual_campuran_rec > 0:
+                mitra_set = set()
+                for txt in vessel_df.loc[vessel_df["DUAL_JENIS"] == "Campuran", "DUAL_KAPAL_LAIN"]:
+                    mitra_set.update(x for x in str(txt).split(", ") if x and x != "-")
+                st.caption(
+                    f"Dual Cycle Campuran {selected_vessel} melibatkan **{len(mitra_set)} kapal lain**: "
+                    + (", ".join(sorted(mitra_set)) if mitra_set else "-")
+                )
+            else:
+                st.caption(f"{selected_vessel} tidak punya Dual Cycle Campuran (tidak bercampur dengan kapal lain).")
 
             vc1, vc2 = st.columns(2)
             with vc1:
