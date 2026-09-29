@@ -268,7 +268,7 @@ with st.container(border=True):
                     r_start, r_end = r_end, r_start
                 is_full_range = (r_start == step2_min_d and r_end == step2_max_d)
                 if is_full_range:
-                    lbl = f"Seluruh Data Excel ({step2_min_d.strftime('%d/%m/%Y')} s.d. {step2_max_d.strftime('%d/%m/%Y')})"
+                    lbl = f"Seluruh Data Excel ({step2_min_d.strftime('%d/%m/%Y')} - {step2_max_d.strftime('%d/%m/%Y')})"
                     rng = None
                 else:
                     n_days = (r_end - r_start).days + 1
