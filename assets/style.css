@@ -1496,13 +1496,14 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(#step1-card-marker) [data-te
 div[data-testid="stVerticalBlockBorderWrapper"]:has(#step2-card-marker) div[data-testid="stHorizontalBlock"] {
     display: flex !important;
     width: 100% !important;
+    gap: 16px !important;
 }
 
 div[data-testid="stVerticalBlockBorderWrapper"]:has(#step2-card-marker) div[data-testid="stColumn"],
 div[data-testid="stVerticalBlockBorderWrapper"]:has(#step2-card-marker) div[data-testid="stColumn"]:last-child {
-    flex: 1 1 0px !important;
+    flex: 1 1 0% !important;
     min-width: 0 !important;
-    width: 100% !important;
+    width: 0 !important;
     align-items: stretch !important;
     justify-content: flex-start !important;
 }
@@ -1911,6 +1912,7 @@ button[data-testid="stBaseButton-minimal"]:hover::before {
     margin-top: -8px !important;
     line-height: 1.35 !important;
     margin-bottom: 2px !important;
+    min-height: 38px !important;
     display: block !important;
 }
 
@@ -2604,6 +2606,7 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"]:focus-within > div {
 /* Quick Detail Action Buttons for Dual Cycle & Non Dual (Compact & Sleek) */
 div[class*="st-key-btn_quick_dual_detail"] button,
 div[class*="st-key-btn_quick_non_dual_detail"] button {
+    width: 100% !important;
     padding: 0.32rem 0.65rem !important;
     min-height: 34px !important;
     height: 34px !important;

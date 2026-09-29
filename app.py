@@ -562,16 +562,16 @@ with st.container(border=True):
                 insidetextorientation="horizontal",
                 textfont=dict(family="Plus Jakarta Sans", size=12, color="#ffffff"),
                 marker=dict(line=dict(color="#ffffff", width=2)),
+                domain=dict(x=[0, 0.82], y=[0, 1]),
                 hovertemplate="<b>%{label}</b><br>Jumlah: %{value:,} event (%{percent})<extra></extra>",
             )
             apply_glass_theme(fig_pie)
-            fig_pie.update_layout(margin=dict(t=72, b=25, l=25, r=25))
+            fig_pie.update_layout(height=380, margin=dict(t=60, b=20, l=20, r=20))
 
             # Render chart donut
             st.plotly_chart(
                 fig_pie,
-                use_container_width=True,
-                key="donut_dual_cycle_chart",
+                width="stretch",
             )
 
             # Tombol aksi langsung untuk membuka rincian modal
@@ -619,9 +619,10 @@ with st.container(border=True):
                     insidetextorientation="horizontal",
                     textfont=dict(family="Plus Jakarta Sans", size=12, color="#ffffff"),
                     marker=dict(line=dict(color="#ffffff", width=2)),
+                    domain=dict(x=[0, 0.82], y=[0, 1]),
                 )
                 apply_glass_theme(fig_combo20)
-                fig_combo20.update_layout(margin=dict(t=72, b=25, l=25, r=25))
+                fig_combo20.update_layout(height=380, margin=dict(t=60, b=20, l=20, r=20))
                 st.plotly_chart(fig_combo20, width="stretch")
             else:
                 st.info("Tidak ada kontainer 20ft pada data ini.")
@@ -883,9 +884,10 @@ with st.container(border=True):
                     insidetextorientation="horizontal",
                     textfont=dict(family="Plus Jakarta Sans", size=12, color="#ffffff"),
                     marker=dict(line=dict(color="#ffffff", width=2)),
+                    domain=dict(x=[0, 0.82], y=[0, 1]),
                 )
                 apply_glass_theme(fig_twin_pie)
-                fig_twin_pie.update_layout(margin=dict(t=72, b=25, l=25, r=25))
+                fig_twin_pie.update_layout(height=380, margin=dict(t=60, b=20, l=20, r=20))
                 st.plotly_chart(fig_twin_pie, width="stretch")
             else:
                 st.info("Tidak ada kontainer 20ft pada data ini.")
