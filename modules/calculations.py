@@ -362,20 +362,72 @@ def layer2_dual(events: pd.DataFrame, ambang_dual: float) -> pd.DataFrame:
 def klasifikasi_dual_murni_campuran(out_df: pd.DataFrame) -> pd.DataFrame:
     """
     Menandai tiap baris kontainer berstatus Dual Cycle sebagai:
-    - "Murni"    : seluruh kontainer dalam pasangan Dual Cycle-nya (event DISC
-                   + event LOAD, termasuk kontainer Combo-nya) berasal dari
+    - "Murni"    : SEMUA kontainer dalam satu pasangan Dual Cycle (event DISC +
+                   event LOAD, termasuk kontainer Combo-nya) berasal dari
                    SATU kapal yang sama.
-    - "Campuran" : pasangan Dual Cycle-nya melibatkan kontainer dari kapal lain.
+    - "Campuran" : minimal ada 1 kontainer dalam pasangan yang berasal dari
+                   kapal berbeda (mis. Combo DISC kapal A + LOAD kapal B, atau
+                   Combo yang isinya kapal A + kapal B).
     - "-"        : bukan Dual Cycle.
-    Hasil disimpan di kolom DUAL_JENIS.
+    Hasil disimpan di kolom DUAL_JENIS. Untuk Campuran, kolom DUAL_KAPAL_LAIN
+    berisi daftar kapal mitra (selain kapal pada baris itu).
     """
     out = out_df.copy()
     out["DUAL_JENIS"] = "-"
+    out["DUAL_KAPAL_LAIN"] = "-"
     is_dual = (out["STATUS"] == "Dual Cycle") & (out["DUAL_PAIR_ID"] > 0)
     if is_dual.any():
-        n_kapal = out.loc[is_dual].groupby("DUAL_PAIR_ID")["VES_ID"].transform("nunique")
+        ves_txt = out["VES_ID"].astype(str).str.strip()
+        n_kapal = ves_txt[is_dual].groupby(out.loc[is_dual, "DUAL_PAIR_ID"]).transform("nunique")
         out.loc[is_dual, "DUAL_JENIS"] = np.where(n_kapal == 1, "Murni", "Campuran")
+
+        camp = out["DUAL_JENIS"] == "Campuran"
+        if camp.any():
+            sub_pair = out.loc[camp, "DUAL_PAIR_ID"]
+            sub_ves = ves_txt[camp]
+            kapal_per_pair = sub_ves.groupby(sub_pair).agg(lambda x: frozenset(x))
+            himpunan = sub_pair.map(kapal_per_pair)
+            out.loc[camp, "DUAL_KAPAL_LAIN"] = [
+                ", ".join(sorted(h - {own})) for h, own in zip(himpunan, sub_ves)
+            ]
     return out
+
+
+def ringkasan_per_vessel(out_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ringkasan per kapal (VES_ID), basis baris kontainer:
+    total, dual, murni, campuran, twinlift, combo, serta jumlah kapal mitra
+    (kapal lain yang terlibat dalam Dual Cycle Campuran kapal tsb).
+    """
+    df = pd.DataFrame(
+        {
+            "VES_ID": out_df["VES_ID"].astype(str).str.strip(),
+            "_dual": (out_df["STATUS"] == "Dual Cycle").astype(int),
+            "_murni": (out_df["DUAL_JENIS"] == "Murni").astype(int),
+            "_campuran": (out_df["DUAL_JENIS"] == "Campuran").astype(int),
+            "_twin": (out_df["TWINLIFT_STATUS"] == "Twinlift").astype(int),
+            "_combo": (out_df["CONTAINER_STATUS"] == "Combo").astype(int),
+        }
+    )
+    df = df[df["VES_ID"] != ""]
+    res = df.groupby("VES_ID").agg(
+        total_kontainer=("VES_ID", "size"),
+        dual=("_dual", "sum"),
+        murni=("_murni", "sum"),
+        campuran=("_campuran", "sum"),
+        twinlift=("_twin", "sum"),
+        combo=("_combo", "sum"),
+    )
+
+    mitra = {}
+    if "DUAL_KAPAL_LAIN" in out_df.columns:
+        m = out_df.loc[out_df["DUAL_JENIS"] == "Campuran", ["VES_ID", "DUAL_KAPAL_LAIN"]].copy()
+        m["VES_ID"] = m["VES_ID"].astype(str).str.strip()
+        for ves, txt in zip(m["VES_ID"], m["DUAL_KAPAL_LAIN"]):
+            mitra.setdefault(ves, set()).update(x for x in txt.split(", ") if x and x != "-")
+    res["jumlah_kapal_mitra"] = [len(mitra.get(v, ())) for v in res.index]
+    res["pct_dual"] = np.where(res["total_kontainer"] > 0, res["dual"] / res["total_kontainer"], 0)
+    return res.reset_index()
 
 
 def beri_event_id(events: pd.DataFrame, df_asli: pd.DataFrame):
