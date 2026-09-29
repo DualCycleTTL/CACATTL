@@ -150,10 +150,12 @@ def inject_css(css_filename: str = "style.css"):
     css_path = ASSETS_DIR / css_filename
     if css_path.exists():
         css_content = css_path.read_text(encoding="utf-8")
+        mtime = int(css_path.stat().st_mtime)
+        style_tag = f"<style id=\"caca-custom-style\" data-v=\"{mtime}\">\n{css_content}\n</style>"
         if hasattr(st, "html"):
-            st.html(f"<style>\n{css_content}\n</style>")
+            st.html(style_tag)
         else:
-            st.markdown(f"<style>\n{css_content}\n</style>", unsafe_allow_html=True)
+            st.markdown(style_tag, unsafe_allow_html=True)
 
 
 def inject_transition_script(js_filename: str = "transition.js"):
